@@ -287,6 +287,8 @@ terminate_signal_handler(int signum)
     g_terminate_requested = 1;
 }
 
+static void do_cleanup_and_exit(int code) __attribute__((noreturn));
+
 static void
 do_cleanup_and_exit(int code)
 {
@@ -322,6 +324,8 @@ do_cleanup_and_exit(int code)
 /* Retained name for the remaining call sites that still want the
  * combined "clean up + exit" semantics (main() on success, fatal()
  * on startup errors). */
+static void terminate(int num) __attribute__((noreturn));
+
 static void
 terminate(int num)
 {
