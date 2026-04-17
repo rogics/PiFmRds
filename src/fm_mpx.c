@@ -77,7 +77,7 @@ float *alloc_empty_buffer(size_t length) {
 }
 
 
-int fm_mpx_open(char *filename, size_t len) {
+int fm_mpx_open(const char *filename, size_t len) {
     length = len;
 
     if(filename != NULL) {
@@ -252,7 +252,7 @@ int fm_mpx_get_samples(float *mpx_buffer) {
 }
 
 
-int fm_mpx_close() {
+int fm_mpx_close(void) {
     if(sf_close(inf) ) {
         fprintf(stderr, "Error closing audio file");
     }

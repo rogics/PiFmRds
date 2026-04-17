@@ -256,7 +256,7 @@ char codepoint_to_rds_char(wchar_t codepoint) {
     }
 }
 
-void fill_rds_string(char* rds_string, char* src_string, size_t rds_string_size) {
+void fill_rds_string(char *rds_string, const char *src_string, size_t rds_string_size) {
     mbtowc(NULL, 0, 0);   // Reset decoder.
 
     // First try to copy the source string.

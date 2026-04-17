@@ -195,7 +195,7 @@ void get_rds_samples(float *buffer, int count) {
             
             inverting = (cur_output == 1);
 
-            float *src = waveform_biphase;
+            const float *src = waveform_biphase;
             int idx = in_sample_index;
 
             for(int j=0; j<FILTER_SIZE; j++) {
@@ -238,11 +238,11 @@ void set_rds_pi(uint16_t pi_code) {
     rds_params.pi = pi_code;
 }
 
-void set_rds_rt(char *rt) {
+void set_rds_rt(const char *rt) {
     fill_rds_string(rds_params.rt, rt, 64);
 }
 
-void set_rds_ps(char *ps) {
+void set_rds_ps(const char *ps) {
     fill_rds_string(rds_params.ps, ps, 8);
 }
 

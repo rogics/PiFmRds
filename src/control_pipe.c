@@ -38,7 +38,7 @@ FILE *f_ctl;
 /*
  * Opens a file (pipe) to be used to control the RDS coder, in non-blocking mode.
  */
-int open_control_pipe(char *filename) {
+int open_control_pipe(const char *filename) {
 	int fd = open(filename, O_RDONLY);
     if(fd < 0) return -1;
 
@@ -58,7 +58,7 @@ int open_control_pipe(char *filename) {
  * Polls the control file (pipe), non-blockingly, and if a command is received,
  * processes it and updates the RDS data.
  */
-int poll_control_pipe() {
+int poll_control_pipe(void) {
 	static char buf[CTL_BUFFER_SIZE];
 
     char *res = fgets(buf, CTL_BUFFER_SIZE, f_ctl);
@@ -93,7 +93,7 @@ int poll_control_pipe() {
 /*
  * Closes the control pipe.
  */
-int close_control_pipe() {
+int close_control_pipe(void) {
     if(f_ctl) return fclose(f_ctl);
     else return 0;
 }

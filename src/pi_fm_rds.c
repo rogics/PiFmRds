@@ -272,7 +272,7 @@ terminate(int num)
 }
 
 static void
-fatal(char *fmt, ...)
+fatal(const char *fmt, ...)
 {
     va_list ap;
 
@@ -318,7 +318,8 @@ map_peripheral(uint32_t base, uint32_t len)
 #define DATA_SIZE 5000
 
 
-int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt, float ppm, char *control_pipe) {
+int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *ps,
+       const char *rt, float ppm, const char *control_pipe) {
     // Catch all signals possible - it is vital we kill the DMA engine
     // on process exit!
     for (int i = 0; i < 64; i++) {
@@ -548,11 +549,11 @@ int tx(uint32_t carrier_freq, char *audio_file, uint16_t pi, char *ps, char *rt,
 
 
 int main(int argc, char **argv) {
-    char *audio_file = NULL;
-    char *control_pipe = NULL;
+    const char *audio_file = NULL;
+    const char *control_pipe = NULL;
     uint32_t carrier_freq = 107900000;
-    char *ps = NULL;
-    char *rt = "PiFmRds: live FM-RDS transmission from the RaspberryPi";
+    const char *ps = NULL;
+    const char *rt = "PiFmRds: live FM-RDS transmission from the RaspberryPi";
     uint16_t pi = 0x1234;
     float ppm = 0;
 

@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
     set_rds_ps(argv[3]);
     set_rds_rt(argv[3]);
     
-    char *in_file = argv[1];
+    const char *in_file = argv[1];
     if(strcmp("NONE", argv[1]) == 0) in_file = NULL;
     
     if(fm_mpx_open(in_file, LENGTH) != 0) {
@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
     sfinfo.seekable = 0;
     
     // Open the output file
-    char *out_file = argv[2];
+    const char *out_file = argv[2];
     if (! (outf = sf_open(out_file, SFM_WRITE, &sfinfo))) {
         fprintf(stderr, "Error: could not open output file %s.\n", out_file);
         return EXIT_FAILURE;
