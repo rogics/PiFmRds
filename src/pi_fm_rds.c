@@ -531,7 +531,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
             data_index++;
             data_len--;
 
-            int intval = (int)((floor)(dval));
+            int intval = lrintf(dval);
             //int frac = (int)((dval - (float)intval) * SUBSIZE);
 
 
