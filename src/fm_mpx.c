@@ -1,11 +1,11 @@
 /*
     PiFmRds - FM/RDS transmitter for the Raspberry Pi
     Copyright (C) 2014 Christophe Jacquet, F8FTK
-    
+
     See https://github.com/ChristopheJacquet/PiFmRds
-    
-    rds_wav.c is a test program that writes a RDS baseband signal to a WAV
-    file. It requires libsndfile.
+
+    fm_mpx.c: generates an FM multiplex signal containing RDS plus possibly
+    monaural or stereo audio. Depends on libsndfile for audio input.
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -19,9 +19,6 @@
 
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
-    
-    fm_mpx.c: generates an FM multiplex signal containing RDS plus possibly
-    monaural or stereo audio.
 */
 
 #include <sndfile.h>

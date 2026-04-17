@@ -4,6 +4,9 @@
 
     See https://github.com/ChristopheJacquet/PiFmRds
 
+    control_pipe.c: handles commands written to a non-blocking control pipe,
+    in order to change RDS PS, RT and TA at runtime.
+
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
@@ -16,9 +19,6 @@
 
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
-
-    control_pipe.c: handles command written to a non-blocking control pipe,
-    in order to change RDS PS and RT at runtime.
 */
 
 

@@ -1,11 +1,11 @@
 /*
     PiFmRds - FM/RDS transmitter for the Raspberry Pi
     Copyright (C) 2014 Christophe Jacquet, F8FTK
-    
+
     See https://github.com/ChristopheJacquet/PiFmRds
-    
-    rds_wav.c is a test program that writes a RDS baseband signal to a WAV
-    file. It requires libsndfile.
+
+    control_pipe.h: public interface of the runtime RDS control pipe
+    reader implemented in control_pipe.c.
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
