@@ -26,8 +26,10 @@
 
 #include <stdlib.h>
 
-int fm_mpx_open(const char *filename, size_t len);
-int fm_mpx_get_samples(float *mpx_buffer);
-int fm_mpx_close(void);
+#include "pifm_common.h"
+
+pifm_status_t fm_mpx_open(const char *filename, size_t len);
+pifm_status_t fm_mpx_get_samples(float *mpx_buffer);
+pifm_status_t fm_mpx_close(void);
 
 #endif /* FM_MPX_H */

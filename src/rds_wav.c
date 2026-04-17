@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
     const char *in_file = argv[1];
     if(strcmp("NONE", argv[1]) == 0) in_file = NULL;
 
-    if(fm_mpx_open(in_file, LENGTH) != 0) {
+    if(fm_mpx_open(in_file, LENGTH) != PIFM_OK) {
         fprintf(stderr, "Could not setup FM multiplex generator.\n");
         goto cleanup;
     }
@@ -88,7 +88,7 @@ int main(int argc, char **argv) {
     }
 
     for(int j=0; j<40; j++) {
-        if( fm_mpx_get_samples(mpx_buffer) < 0 ) break;
+        if( fm_mpx_get_samples(mpx_buffer) != PIFM_OK ) break;
 
         for(int i=0; i<LENGTH; i++) {
             mpx_buffer[i] /= 10.;

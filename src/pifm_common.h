@@ -25,6 +25,28 @@
 #ifndef PIFM_COMMON_H
 #define PIFM_COMMON_H
 
+/* Unified status / return code enum for the public C API.
+ *
+ * Functions that previously returned ad-hoc 0/-1 integers now return
+ * pifm_status_t. Negative values are errors, PIFM_OK is success, and
+ * positive values are control-pipe "event" codes (see the
+ * CONTROL_PIPE_* compatibility aliases in control_pipe.h).
+ *
+ * Compatibility note: existing call sites compare against 0 and
+ * negative literals, which keeps working because of the chosen
+ * numeric values. */
+typedef enum {
+    PIFM_OK             =  0,
+    PIFM_ERR_IO         = -1,
+    PIFM_ERR_MEM        = -2,
+    PIFM_ERR_HW         = -3,
+    PIFM_ERR_ARG        = -4,
+    PIFM_PIPE_NO_CMD    =  0, /* alias of PIFM_OK for control_pipe_poll */
+    PIFM_PIPE_PS_SET    =  1,
+    PIFM_PIPE_RT_SET    =  2,
+    PIFM_PIPE_TA_SET    =  3,
+} pifm_status_t;
+
 /* RDS Programme Service: exactly 8 characters on air (IEC 62106 1.5.1). */
 #define PS_LENGTH       8
 /* RDS RadioText: up to 64 characters on air (IEC 62106 3.1.5.3). */

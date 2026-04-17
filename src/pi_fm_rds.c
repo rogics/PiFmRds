@@ -402,8 +402,9 @@ map_peripheral(uint32_t base, uint32_t len)
 #define DATA_SIZE 5000
 
 
-int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *ps,
-       const char *rt, float ppm, const char *control_pipe) {
+pifm_status_t tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi,
+                 const char *ps, const char *rt, float ppm,
+                 const char *control_pipe) {
     // Install handlers on the signals we actually want to intercept
     // (see install_signal_handlers for the list). Crucially, we no
     // longer hook SIGPIPE / SIGCHLD / real-time signals.
@@ -533,7 +534,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     int data_index = 0;
 
     // Initialize the baseband generator
-    if(fm_mpx_open(audio_file, DATA_SIZE) < 0) return 1;
+    if(fm_mpx_open(audio_file, DATA_SIZE) != PIFM_OK) return PIFM_ERR_IO;
 
     // Initialize the RDS modulator
     char generated_ps[PS_BUF_SIZE] = {0};
@@ -556,7 +557,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     if(control_pipe) {
         printf("Waiting for control pipe `%s` to be opened by the writer, e.g. "
                "by running `cat >%s`.\n", control_pipe, control_pipe);
-        if(control_pipe_open(control_pipe) == 0) {
+        if(control_pipe_open(control_pipe) == PIFM_OK) {
             printf("Reading control commands on %s.\n", control_pipe);
         } else {
             printf("Failed to open control pipe: %s.\n", control_pipe);
@@ -605,7 +606,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
         while (free_slots >= SUBSIZE) {
             // get more baseband samples if necessary
             if(data_len == 0) {
-                if( fm_mpx_get_samples(data) < 0 ) {
+                if( fm_mpx_get_samples(data) != PIFM_OK ) {
                     terminate(0);
                 }
                 data_len = DATA_SIZE;
@@ -629,7 +630,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
         last_cb_virt_addr = (size_t)(mbox.virt_addr + last_sample * sizeof(dma_cb_t) * 2);
     }
 
-    return 0;
+    return PIFM_OK;
 }
 
 
@@ -802,7 +803,10 @@ int main(int argc, char **argv) {
     char* locale = setlocale(LC_ALL, "");
     printf("Locale set to %s.\n", locale);
 
-    int errcode = tx(carrier_freq, audio_file, pi, ps, rt, ppm, control_pipe);
+    pifm_status_t status = tx(carrier_freq, audio_file, pi, ps, rt, ppm, control_pipe);
 
-    terminate(errcode);
+    /* Map internal status onto a shell-friendly exit code: 0 on
+     * success, 1 on any error (the specific status is already logged
+     * to stderr). */
+    terminate(status == PIFM_OK ? EXIT_SUCCESS : EXIT_FAILURE);
 }

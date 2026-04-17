@@ -82,25 +82,25 @@ static float *alloc_empty_buffer(size_t length) {
 }
 
 
-int fm_mpx_open(const char *filename, size_t len) {
+pifm_status_t fm_mpx_open(const char *filename, size_t len) {
     length = len;
 
     if(filename != NULL) {
         // Open the input file
         SF_INFO sfinfo;
- 
+
         // stdin or file on the filesystem?
         if(filename[0] == '-') {
             if(! (inf = sf_open_fd(fileno(stdin), SFM_READ, &sfinfo, 0))) {
                 fprintf(stderr, "Error: could not open stdin for audio input.\n") ;
-                return -1;
+                return PIFM_ERR_IO;
             } else {
                 printf("Using stdin for audio input.\n");
             }
         } else {
             if(! (inf = sf_open(filename, SFM_READ, &sfinfo))) {
                 fprintf(stderr, "Error: could not open input file %s.\n", filename) ;
-                return -1;
+                return PIFM_ERR_IO;
             } else {
                 printf("Using audio file: %s\n", filename);
             }
@@ -147,24 +147,24 @@ int fm_mpx_open(const char *filename, size_t len) {
         
         audio_pos = downsample_factor;
         audio_buffer = alloc_empty_buffer(length * channels);
-        if(audio_buffer == NULL) return -1;
+        if(audio_buffer == NULL) return PIFM_ERR_MEM;
 
     } // end if(filename != NULL)
     else {
         inf = NULL;
         // inf == NULL indicates that there is no audio
     }
-    
-    return 0;
+
+    return PIFM_OK;
 }
 
 
 // samples provided by this function are in 0..10: they need to be divided by
 // 10 after.
-int fm_mpx_get_samples(float *mpx_buffer) {
+pifm_status_t fm_mpx_get_samples(float *mpx_buffer) {
     rds_get_samples(mpx_buffer, length);
 
-    if(inf  == NULL) return 0; // if there is no audio, stop here
+    if(inf  == NULL) return PIFM_OK; // if there is no audio, stop here
     
     for(int i=0; i<length; i++) {
         if(audio_pos >= downsample_factor) {
@@ -183,12 +183,12 @@ int fm_mpx_get_samples(float *mpx_buffer) {
                                               (sf_count_t)length * channels);
                     if (audio_len < 0) {
                         fprintf(stderr, "Error reading audio\n");
-                        return -1;
+                        return PIFM_ERR_IO;
                     }
                     if(audio_len == 0) {
                         if( sf_seek(inf, 0, SEEK_SET) < 0 ) {
                             fprintf(stderr, "Could not rewind in audio file, terminating\n");
-                            return -1;
+                            return PIFM_ERR_IO;
                         }
                     } else {
                         break;
@@ -257,15 +257,15 @@ int fm_mpx_get_samples(float *mpx_buffer) {
             if(phase_38 >= 6) phase_38 = 0;
         }
             
-        audio_pos++;   
-        
+        audio_pos++;
+
     }
-    
-    return 0;
+
+    return PIFM_OK;
 }
 
 
-int fm_mpx_close(void) {
+pifm_status_t fm_mpx_close(void) {
     if(inf != NULL && sf_close(inf)) {
         fprintf(stderr, "Error closing audio file\n");
     }
@@ -276,5 +276,5 @@ int fm_mpx_close(void) {
         audio_buffer = NULL;
     }
 
-    return 0;
+    return PIFM_OK;
 }

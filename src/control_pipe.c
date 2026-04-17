@@ -43,8 +43,6 @@
 /* Hold at least one full "RT <up to 64 chars>\n\0" line plus slop. */
 #define CTL_LINE_MAX 256
 
-#define CONTROL_PIPE_NO_CMD 0
-
 /* Persistent state across control_pipe_poll() calls. We own the fd
  * directly (not through a FILE*) so we can reliably non-block, detect
  * writer-close (EOF on read), and re-open. */
@@ -59,23 +57,23 @@ static int  ctl_line_overflow = 0;
 /*
  * Open `filename` as a non-blocking control FIFO / file.
  */
-static int ctl_reopen(void) {
+static pifm_status_t ctl_reopen(void) {
     if (ctl_fd >= 0) {
         close(ctl_fd);
         ctl_fd = -1;
     }
     int fd = open(ctl_filename, O_RDONLY | O_NONBLOCK);
-    if (fd < 0) return -1;
+    if (fd < 0) return PIFM_ERR_IO;
     ctl_fd = fd;
     ctl_line_len = 0;
     ctl_line_overflow = 0;
-    return 0;
+    return PIFM_OK;
 }
 
-int control_pipe_open(const char *filename) {
-    if (filename == NULL) return -1;
+pifm_status_t control_pipe_open(const char *filename) {
+    if (filename == NULL) return PIFM_ERR_ARG;
     size_t n = strnlen(filename, sizeof(ctl_filename));
-    if (n >= sizeof(ctl_filename)) return -1;
+    if (n >= sizeof(ctl_filename)) return PIFM_ERR_ARG;
     memcpy(ctl_filename, filename, n + 1);
     return ctl_reopen();
 }
@@ -89,26 +87,26 @@ struct command_entry {
     const char *prefix;
     size_t      prefix_len;
     size_t      max_arg_len;
-    int (*handler)(char *arg);
+    pifm_status_t (*handler)(char *arg);
 };
 
-static int handle_ps(char *arg) {
+static pifm_status_t handle_ps(char *arg) {
     rds_set_ps(arg);
     printf("PS set to: \"%s\"\n", arg);
-    return CONTROL_PIPE_PS_SET;
+    return PIFM_PIPE_PS_SET;
 }
 
-static int handle_rt(char *arg) {
+static pifm_status_t handle_rt(char *arg) {
     rds_set_rt(arg);
     printf("RT set to: \"%s\"\n", arg);
-    return CONTROL_PIPE_RT_SET;
+    return PIFM_PIPE_RT_SET;
 }
 
-static int handle_ta(char *arg) {
+static pifm_status_t handle_ta(char *arg) {
     int ta = (strcmp(arg, "ON") == 0);
     rds_set_ta(ta);
     printf("Set TA to %s\n", ta ? "ON" : "OFF");
-    return CONTROL_PIPE_TA_SET;
+    return PIFM_PIPE_TA_SET;
 }
 
 static const struct command_entry commands[] = {
@@ -118,9 +116,9 @@ static const struct command_entry commands[] = {
 };
 
 /* Dispatch a single, already-NUL-terminated command line. Returns the
- * command's status code, or CONTROL_PIPE_NO_CMD for an unrecognised
+ * command's status code, or PIFM_PIPE_NO_CMD for an unrecognised
  * / malformed line. */
-static int dispatch_line(char *line) {
+static pifm_status_t dispatch_line(char *line) {
     for (size_t i = 0; i < sizeof(commands)/sizeof(commands[0]); i++) {
         const struct command_entry *c = &commands[i];
         if (strncmp(line, c->prefix, c->prefix_len) == 0) {
@@ -133,14 +131,14 @@ static int dispatch_line(char *line) {
         }
     }
     fprintf(stderr, "control_pipe: ignoring unrecognised command: \"%s\"\n", line);
-    return CONTROL_PIPE_NO_CMD;
+    return PIFM_PIPE_NO_CMD;
 }
 
 /*
  * Polls the control file (pipe), non-blockingly. A command is dispatched
  * every time a '\n' is seen in the accumulated line buffer. If no complete
  * line is available yet (short read / writer has not flushed), returns
- * CONTROL_PIPE_NO_CMD so the caller can just continue.
+ * PIFM_PIPE_NO_CMD so the caller can just continue.
  *
  * The previous implementation used fgets() on a non-blocking fd, which
  * silently discarded partial lines and occasionally returned spurious
@@ -149,26 +147,26 @@ static int dispatch_line(char *line) {
  *   - writer close + later re-open (the FIFO is transparently re-opened),
  *   - overflowed lines (dropped with a warning).
  */
-int control_pipe_poll(void) {
-    if (ctl_fd < 0) return CONTROL_PIPE_NO_CMD;
+pifm_status_t control_pipe_poll(void) {
+    if (ctl_fd < 0) return PIFM_PIPE_NO_CMD;
 
     char scratch[CTL_LINE_MAX];
     ssize_t n = read(ctl_fd, scratch, sizeof(scratch));
     if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-            return CONTROL_PIPE_NO_CMD;
+            return PIFM_PIPE_NO_CMD;
         }
         fprintf(stderr, "control_pipe: read error: %s\n", strerror(errno));
-        return CONTROL_PIPE_NO_CMD;
+        return PIFM_PIPE_NO_CMD;
     }
     if (n == 0) {
         /* Writer closed the FIFO. Re-open non-blocking so the next
          * `cat > ctl_pipe` starts with a clean slate. */
         ctl_reopen();
-        return CONTROL_PIPE_NO_CMD;
+        return PIFM_PIPE_NO_CMD;
     }
 
-    int last_status = CONTROL_PIPE_NO_CMD;
+    pifm_status_t last_status = PIFM_PIPE_NO_CMD;
     for (ssize_t i = 0; i < n; i++) {
         char ch = scratch[i];
         if (ch == '\n') {
@@ -180,8 +178,8 @@ int control_pipe_poll(void) {
             }
             ctl_line[ctl_line_len] = 0;
             if (ctl_line_len > 0) {
-                int st = dispatch_line(ctl_line);
-                if (st != CONTROL_PIPE_NO_CMD) last_status = st;
+                pifm_status_t st = dispatch_line(ctl_line);
+                if (st != PIFM_PIPE_NO_CMD) last_status = st;
             }
             ctl_line_len = 0;
         } else if (ctl_line_overflow) {
@@ -197,10 +195,10 @@ int control_pipe_poll(void) {
     return last_status;
 }
 
-int control_pipe_close(void) {
+pifm_status_t control_pipe_close(void) {
     if (ctl_fd >= 0) {
         close(ctl_fd);
         ctl_fd = -1;
     }
-    return 0;
+    return PIFM_OK;
 }

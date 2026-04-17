@@ -24,12 +24,15 @@
 #ifndef CONTROL_PIPE_H
 #define CONTROL_PIPE_H
 
-#define CONTROL_PIPE_PS_SET 1
-#define CONTROL_PIPE_RT_SET 2
-#define CONTROL_PIPE_TA_SET 3
+#include "pifm_common.h"
 
-int control_pipe_open(const char *filename);
-int control_pipe_close(void);
-int control_pipe_poll(void);
+/* Backwards-compatible aliases. Prefer PIFM_PIPE_* in new code. */
+#define CONTROL_PIPE_PS_SET PIFM_PIPE_PS_SET
+#define CONTROL_PIPE_RT_SET PIFM_PIPE_RT_SET
+#define CONTROL_PIPE_TA_SET PIFM_PIPE_TA_SET
+
+pifm_status_t control_pipe_open(const char *filename);
+pifm_status_t control_pipe_close(void);
+pifm_status_t control_pipe_poll(void);
 
 #endif /* CONTROL_PIPE_H */
