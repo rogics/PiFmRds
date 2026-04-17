@@ -194,7 +194,7 @@ int fm_mpx_get_samples(float *mpx_buffer) {
 
         
         // First store the current sample(s) into the FIR filter's ring buffer
-        if(channels == 0) {
+        if(channels == 1) {
             fir_buffer_mono[fir_index] = audio_buffer[audio_index];
         } else {
             // In stereo operation, generate sum and difference signals
