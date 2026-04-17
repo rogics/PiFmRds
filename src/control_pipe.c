@@ -30,6 +30,7 @@
 
 #include "rds.h"
 #include "control_pipe.h"
+#include "pifm_common.h"
 
 #define CTL_BUFFER_SIZE 100
 
@@ -65,15 +66,19 @@ int poll_control_pipe(void) {
     if(res == NULL) return -1;
     if(strlen(res) > 3 && res[2] == ' ') {
         char *arg = res+3;
-        if(arg[strlen(arg)-1] == '\n') arg[strlen(arg)-1] = 0;
+        size_t arg_len = strlen(arg);
+        if(arg_len > 0 && arg[arg_len-1] == '\n') {
+            arg[arg_len-1] = 0;
+            arg_len--;
+        }
         if(res[0] == 'P' && res[1] == 'S') {
-            arg[8] = 0;
+            if(arg_len > PS_LENGTH) arg[PS_LENGTH] = 0;
             set_rds_ps(arg);
             printf("PS set to: \"%s\"\n", arg);
             return CONTROL_PIPE_PS_SET;
         }
         if(res[0] == 'R' && res[1] == 'T') {
-            arg[64] = 0;
+            if(arg_len > RT_LENGTH) arg[RT_LENGTH] = 0;
             set_rds_rt(arg);
             printf("RT set to: \"%s\"\n", arg);
             return CONTROL_PIPE_RT_SET;
