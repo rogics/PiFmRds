@@ -2,6 +2,12 @@ src/waveform_*.wav
 src/pydemod
 src/test
 src/pi_fm_rds
+src/rds_wav
 src/*_test
+src/*.o
+src/*.d
 *.o
 
+# Regression baseline artefacts (Ground rule G3 in REFACTORING_PLAN.md).
+baseline_mpx.wav
+baseline_mpx.sha256
