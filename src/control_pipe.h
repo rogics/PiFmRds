@@ -21,6 +21,8 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifndef CONTROL_PIPE_H
+#define CONTROL_PIPE_H
 
 #define CONTROL_PIPE_PS_SET 1
 #define CONTROL_PIPE_RT_SET 2
@@ -29,3 +31,5 @@
 extern int open_control_pipe(char *filename);
 extern int close_control_pipe();
 extern int poll_control_pipe();
+
+#endif /* CONTROL_PIPE_H */

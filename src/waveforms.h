@@ -4,4 +4,9 @@
    Released under the GNU GPL v3 license.
 */
 
+#ifndef WAVEFORMS_H
+#define WAVEFORMS_H
+
 extern float waveform_biphase[576];
+
+#endif /* WAVEFORMS_H */

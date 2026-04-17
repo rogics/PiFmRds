@@ -18,8 +18,8 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef RDS_H
-#define RDS_H
+#ifndef RDS_STRINGS_H
+#define RDS_STRINGS_H
 
 
 #include <stdlib.h>
@@ -27,4 +27,4 @@
 extern void fill_rds_string(char* rds_string, char* src_string, size_t rds_string_size);
 
 
-#endif /* RDS_H */
+#endif /* RDS_STRINGS_H */

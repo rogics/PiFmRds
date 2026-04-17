@@ -21,6 +21,13 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifndef FM_MPX_H
+#define FM_MPX_H
+
+#include <stdlib.h>
+
 extern int fm_mpx_open(char *filename, size_t len);
 extern int fm_mpx_get_samples(float *mpx_buffer);
 extern int fm_mpx_close();
+
+#endif /* FM_MPX_H */
