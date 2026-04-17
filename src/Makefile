@@ -66,6 +66,12 @@ ifneq ($(TARGET), other)
 CFLAGS += -DRASPI=$(TARGET)
 endif
 
+# Version string baked into the binary for --version (Phase 11).
+# `git describe` gives a human-readable name (tag + commit). Fallback
+# to the short SHA, then "unknown" if this isn't a git checkout at all.
+PIFM_VERSION ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo unknown)
+CFLAGS += -DPIFM_VERSION=\"$(PIFM_VERSION)\"
+
 # DSP translation units get -ftree-vectorize and -ffast-math. Note: we
 # intentionally DO NOT apply -ffast-math project-wide, because it
 # breaks the RDS CRC bit manipulation and the Modified Julian Day

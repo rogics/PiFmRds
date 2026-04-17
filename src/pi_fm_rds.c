@@ -99,6 +99,7 @@
 #include <math.h>
 #include <time.h>
 #include <signal.h>
+#include <getopt.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -632,6 +633,46 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
 }
 
 
+#ifndef PIFM_VERSION
+#define PIFM_VERSION "unknown"
+#endif
+
+static const char *g_progname = "pi_fm_rds";
+
+static void print_usage(FILE *out) {
+    fprintf(out,
+        "Usage: %s [options]\n"
+        "\n"
+        "  --freq FREQ       carrier frequency in MHz (76.0 .. 108.0)\n"
+        "  --audio FILE      WAV/OGG/FLAC audio file to transmit (or - for stdin)\n"
+        "  --wav   FILE      alias for --audio\n"
+        "  --ppm   PPM       crystal error in parts-per-million\n"
+        "  --pi    HEX       RDS PI code (4 hex digits)\n"
+        "  --ps    TEXT      RDS Programme Service name (<= %d chars)\n"
+        "  --rt    TEXT      RDS RadioText (<= %d chars)\n"
+        "  --ctl   FILE      FIFO / file used to update PS/RT/TA at runtime\n"
+        "  -h, --help        print this message and exit\n"
+        "  -V, --version     print the program version and exit\n"
+        "\n"
+        "Single-dash forms (-freq, -ps, ...) are accepted for backward\n"
+        "compatibility; please migrate to the double-dash forms.\n",
+        g_progname, PS_LENGTH, RT_LENGTH);
+}
+
+static void print_version(FILE *out) {
+    fprintf(out, "PiFmRds %s\n", PIFM_VERSION);
+}
+
+/* Parse a carrier frequency given in MHz as a string. Returns the
+ * frequency in Hz, or 0 on parse / range error. */
+static uint32_t parse_carrier_freq(const char *s) {
+    char *end = NULL;
+    double mhz = strtod(s, &end);
+    if (end == s || *end != '\0') return 0;
+    if (mhz < 76.0 || mhz > 108.0) return 0;
+    return (uint32_t)(mhz * 1e6);
+}
+
 int main(int argc, char **argv) {
     const char *audio_file = NULL;
     const char *control_pipe = NULL;
@@ -641,46 +682,123 @@ int main(int argc, char **argv) {
     uint16_t pi = 0x1234;
     float ppm = 0;
 
+    if (argc > 0 && argv[0] != NULL && argv[0][0] != '\0') {
+        g_progname = argv[0];
+    }
 
-    // Parse command-line arguments
-    for(int i=1; i<argc; i++) {
-        char *arg = argv[i];
-        char *param = NULL;
-
-        if(arg[0] == '-' && i+1 < argc) param = argv[i+1];
-
-        if((strcmp("-wav", arg)==0 || strcmp("-audio", arg)==0) && param != NULL) {
-            i++;
-            audio_file = param;
-        } else if(strcmp("-freq", arg)==0 && param != NULL) {
-            i++;
-            carrier_freq = 1e6 * atof(param);
-            if(carrier_freq < 76e6 || carrier_freq > 108e6)
-                fatal("Incorrect frequency specification. Must be in megahertz, of the form 107.9, between 76 and 108.\n");
-        } else if(strcmp("-pi", arg)==0 && param != NULL) {
-            i++;
-            pi = (uint16_t) strtol(param, NULL, 16);
-        } else if(strcmp("-ps", arg)==0 && param != NULL) {
-            i++;
-            ps = param;
-        } else if(strcmp("-rt", arg)==0 && param != NULL) {
-            i++;
-            rt = param;
-        } else if(strcmp("-ppm", arg)==0 && param != NULL) {
-            i++;
-            ppm = atof(param);
-        } else if(strcmp("-ctl", arg)==0 && param != NULL) {
-            i++;
-            control_pipe = param;
-        } else {
-            fatal("Unrecognised argument: %s.\n"
-            "Syntax: pi_fm_rds [-freq freq] [-audio file] [-ppm ppm_error] [-pi pi_code]\n"
-            "                  [-ps ps_text] [-rt rt_text] [-ctl control_pipe]\n", arg);
+    /* Deprecation warning: emit one-off warning per legacy single-dash
+     * long option (-freq, -ps, ...). getopt_long_only() still accepts
+     * them so behaviour is preserved; they are scheduled for removal
+     * in a future release per Phase 11 of the refactoring plan. */
+    static const char * const legacy_singles[] = {
+        "-freq", "-audio", "-wav", "-ppm", "-pi", "-ps", "-rt", "-ctl", NULL
+    };
+    for (int i = 1; i < argc; i++) {
+        for (int j = 0; legacy_singles[j] != NULL; j++) {
+            if (strcmp(argv[i], legacy_singles[j]) == 0) {
+                fprintf(stderr, "warning: '%s' is deprecated, use '-%s' "
+                        "(or just --%s) instead.\n",
+                        legacy_singles[j], legacy_singles[j], legacy_singles[j] + 1);
+                break;
+            }
         }
     }
 
-    // Set locale based on the environment variables. This is necessary to decode
-    // non-ASCII characters using mbtowc() in rds_strings.c.
+    /* Long-option table. We use getopt_long_only so the classic
+     * single-dash spellings (-freq, -ps, ...) still work alongside
+     * the modern double-dash forms. All options take a required
+     * argument except --help / --version.
+     *
+     * `val` doubles as a synthetic "short option" identifier; using
+     * values above 127 avoids clashes with the real -h / -V shorts. */
+    enum {
+        OPT_FREQ = 0x100,
+        OPT_AUDIO, OPT_WAV, OPT_PPM, OPT_PI, OPT_PS, OPT_RT, OPT_CTL,
+    };
+    static const struct option long_opts[] = {
+        { "freq",    required_argument, NULL, OPT_FREQ   },
+        { "audio",   required_argument, NULL, OPT_AUDIO  },
+        { "wav",     required_argument, NULL, OPT_WAV    },
+        { "ppm",     required_argument, NULL, OPT_PPM    },
+        { "pi",      required_argument, NULL, OPT_PI     },
+        { "ps",      required_argument, NULL, OPT_PS     },
+        { "rt",      required_argument, NULL, OPT_RT     },
+        { "ctl",     required_argument, NULL, OPT_CTL    },
+        { "help",    no_argument,       NULL, 'h'        },
+        { "version", no_argument,       NULL, 'V'        },
+        { NULL, 0, NULL, 0 }
+    };
+
+    /* Leading ':' enables distinguishing unknown option (?) from
+     * missing argument (:) in the switch below. */
+    int opt;
+    int opt_index = 0;
+    while ((opt = getopt_long_only(argc, argv, ":hV", long_opts, &opt_index)) != -1) {
+        switch (opt) {
+        case OPT_FREQ: {
+            uint32_t f = parse_carrier_freq(optarg);
+            if (f == 0) {
+                fatal("Incorrect frequency specification '%s'. Must be in megahertz, "
+                      "of the form 107.9, between 76 and 108.\n", optarg);
+            }
+            carrier_freq = f;
+            break;
+        }
+        case OPT_AUDIO:
+        case OPT_WAV:
+            audio_file = optarg;
+            break;
+        case OPT_PPM:
+            ppm = atof(optarg);
+            break;
+        case OPT_PI: {
+            char *end = NULL;
+            long v = strtol(optarg, &end, 16);
+            if (end == optarg || *end != '\0' || v < 0 || v > 0xFFFF) {
+                fatal("Incorrect PI code '%s'. Must be four hex digits (e.g. 1234).\n",
+                      optarg);
+            }
+            pi = (uint16_t)v;
+            break;
+        }
+        case OPT_PS:
+            if (strlen(optarg) > PS_LENGTH) {
+                fprintf(stderr, "warning: PS text '%s' is longer than %d characters; "
+                        "will be truncated.\n", optarg, PS_LENGTH);
+            }
+            ps = optarg;
+            break;
+        case OPT_RT:
+            if (strlen(optarg) > RT_LENGTH) {
+                fprintf(stderr, "warning: RT text is longer than %d characters; "
+                        "will be truncated.\n", RT_LENGTH);
+            }
+            rt = optarg;
+            break;
+        case OPT_CTL:
+            control_pipe = optarg;
+            break;
+        case 'h':
+            print_usage(stdout);
+            return EXIT_SUCCESS;
+        case 'V':
+            print_version(stdout);
+            return EXIT_SUCCESS;
+        case ':':
+            fatal("Option '%s' requires an argument.\n", argv[optind - 1]);
+        case '?':
+        default:
+            print_usage(stderr);
+            return EXIT_FAILURE;
+        }
+    }
+
+    if (optind < argc) {
+        fatal("Unexpected positional argument: %s\n", argv[optind]);
+    }
+
+    /* Set locale based on the environment variables. Necessary to
+     * decode non-ASCII characters using mbtowc() in rds_strings.c. */
     char* locale = setlocale(LC_ALL, "");
     printf("Locale set to %s.\n", locale);
 
