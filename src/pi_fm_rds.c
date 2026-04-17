@@ -361,6 +361,13 @@ install_signal_handlers(void)
     }
 }
 
+/* Marked noreturn so the compiler knows the switch cases in main()
+ * that end in fatal() never fall through into the next case label.
+ * The format attribute is intentionally omitted because some callers
+ * use the glibc extension "%m" which triggers spurious warnings on
+ * strict toolchains. */
+static void fatal(const char *fmt, ...) __attribute__((noreturn));
+
 static void
 fatal(const char *fmt, ...)
 {

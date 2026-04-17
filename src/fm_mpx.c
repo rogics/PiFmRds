@@ -166,7 +166,7 @@ pifm_status_t fm_mpx_get_samples(float *mpx_buffer) {
 
     if(inf  == NULL) return PIFM_OK; // if there is no audio, stop here
     
-    for(int i=0; i<length; i++) {
+    for(size_t i=0; i<length; i++) {
         if(audio_pos >= downsample_factor) {
             audio_pos -= downsample_factor;
             

@@ -51,7 +51,11 @@ static struct {
 
 #define BITS_PER_GROUP (GROUP_LENGTH * (BLOCK_SIZE+POLY_DEG))
 #define SAMPLES_PER_BIT 192
-#define FILTER_SIZE (sizeof(waveform_biphase)/sizeof(float))
+/* Cast to int so the loop counters in rds_get_samples() (also int)
+ * don't provoke -Wsign-compare. sizeof(...) is size_t and would
+ * otherwise promote the comparison. Both values fit in int by a wide
+ * margin (FILTER_SIZE == 576, SAMPLE_BUFFER_SIZE == 768). */
+#define FILTER_SIZE ((int)(sizeof(waveform_biphase)/sizeof(float)))
 #define SAMPLE_BUFFER_SIZE (SAMPLES_PER_BIT + FILTER_SIZE)
 
 
