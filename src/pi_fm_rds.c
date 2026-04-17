@@ -112,7 +112,13 @@
 
 #include "mailbox.h"
 #include "pifm_common.h"
+#include "logging.h"
 #define MBFILE            DEVICE_FILE_NAME    /* From mailbox.h */
+
+/* Single definition of the logging verbosity dial (see logging.h).
+ * Lives here because pi_fm_rds.c is always linked into the main
+ * binary; rds_wav.c provides its own copy. */
+int g_log_level = LOG_LEVEL_INFO;
 
 #if (RASPI)==1
 #define PERIPH_VIRT_BASE 0x20000000
@@ -555,12 +561,15 @@ pifm_status_t tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi,
 
     // Initialize the control pipe reader
     if(control_pipe) {
-        printf("Waiting for control pipe `%s` to be opened by the writer, e.g. "
-               "by running `cat >%s`.\n", control_pipe, control_pipe);
+        LOG_INFO("Waiting for control pipe `%s` to be opened by the writer, e.g. "
+                 "by running `cat >%s`.", control_pipe, control_pipe);
         if(control_pipe_open(control_pipe) == PIFM_OK) {
-            printf("Reading control commands on %s.\n", control_pipe);
+            LOG_INFO("Reading control commands on %s.", control_pipe);
         } else {
-            printf("Failed to open control pipe: %s.\n", control_pipe);
+            /* §6.10: previously logged to stdout; downgrading it to
+             * LOG_ERR routes it through stderr where error-handling
+             * shell scripts expect it. */
+            LOG_ERR("Failed to open control pipe: %s.", control_pipe);
             control_pipe = NULL;
         }
     }
@@ -654,6 +663,8 @@ static void print_usage(FILE *out) {
         "  --ctl   FILE      FIFO / file used to update PS/RT/TA at runtime\n"
         "  -h, --help        print this message and exit\n"
         "  -V, --version     print the program version and exit\n"
+        "  -v, --verbose     increase logging verbosity (repeatable)\n"
+        "  -q, --quiet       decrease logging verbosity (repeatable)\n"
         "\n"
         "Single-dash forms (-freq, -ps, ...) are accepted for backward\n"
         "compatibility; please migrate to the double-dash forms.\n",
@@ -727,6 +738,8 @@ int main(int argc, char **argv) {
         { "ctl",     required_argument, NULL, OPT_CTL    },
         { "help",    no_argument,       NULL, 'h'        },
         { "version", no_argument,       NULL, 'V'        },
+        { "verbose", no_argument,       NULL, 'v'        },
+        { "quiet",   no_argument,       NULL, 'q'        },
         { NULL, 0, NULL, 0 }
     };
 
@@ -734,7 +747,7 @@ int main(int argc, char **argv) {
      * missing argument (:) in the switch below. */
     int opt;
     int opt_index = 0;
-    while ((opt = getopt_long_only(argc, argv, ":hV", long_opts, &opt_index)) != -1) {
+    while ((opt = getopt_long_only(argc, argv, ":hVvq", long_opts, &opt_index)) != -1) {
         switch (opt) {
         case OPT_FREQ: {
             uint32_t f = parse_carrier_freq(optarg);
@@ -785,6 +798,12 @@ int main(int argc, char **argv) {
         case 'V':
             print_version(stdout);
             return EXIT_SUCCESS;
+        case 'v':
+            if (g_log_level < LOG_LEVEL_DBG) g_log_level++;
+            break;
+        case 'q':
+            if (g_log_level > LOG_LEVEL_ERR) g_log_level--;
+            break;
         case ':':
             fatal("Option '%s' requires an argument.\n", argv[optind - 1]);
         case '?':
