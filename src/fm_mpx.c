@@ -58,8 +58,8 @@ static float downsample_factor;
 
 
 static float *audio_buffer;
-static int audio_index = 0;
-static int audio_len = 0;
+static sf_count_t audio_index = 0;
+static sf_count_t audio_len = 0;
 static float audio_pos;
 
 static float fir_buffer_mono[FIR_SIZE] = {0};
@@ -171,7 +171,15 @@ int fm_mpx_get_samples(float *mpx_buffer) {
             
             if(audio_len == 0) {
                 for(int j=0; j<2; j++) { // one retry
-                    audio_len = sf_read_float(inf, audio_buffer, length);
+                    /* sf_read_float reads `count` items = `count` samples
+                     * (not frames). Request a whole number of multi-channel
+                     * frames so the (index, index+1) stereo pair below
+                     * always reads valid data and we never truncate a
+                     * frame at a buffer boundary. libsndfile guarantees
+                     * the returned count is a multiple of `channels`
+                     * when the requested count is. */
+                    audio_len = sf_read_float(inf, audio_buffer,
+                                              (sf_count_t)length * channels);
                     if (audio_len < 0) {
                         fprintf(stderr, "Error reading audio\n");
                         return -1;
