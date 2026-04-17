@@ -37,28 +37,40 @@
 
 /* Simple test program */
 int main(int argc, char **argv) {
+    int exit_code = EXIT_FAILURE;
+    int fm_mpx_opened = 0;
+    SNDFILE *outf = NULL;
+    float *mpx_buffer = NULL;
+
     if(argc < 4) {
         fprintf(stderr, "Error: missing argument.\n");
         fprintf(stderr, "Syntax: rds_wav <in_audio.wav> <out_mpx.wav> <text>\n");
         return EXIT_FAILURE;
     }
-    
+
     set_rds_pi(0x1234);
     set_rds_ps(argv[3]);
     set_rds_rt(argv[3]);
-    
+
     const char *in_file = argv[1];
     if(strcmp("NONE", argv[1]) == 0) in_file = NULL;
-    
-    if(fm_mpx_open(in_file, LENGTH) != 0) {
-        printf("Could not setup FM mulitplex generator.\n");
-        return EXIT_FAILURE;
-    }
-    
 
-    
+    if(fm_mpx_open(in_file, LENGTH) != 0) {
+        fprintf(stderr, "Could not setup FM multiplex generator.\n");
+        goto cleanup;
+    }
+    fm_mpx_opened = 1;
+
+    /* LENGTH is 114000 floats = 456 kB; too large to keep on the
+     * stack on targets with small default stack limits. */
+    mpx_buffer = malloc(LENGTH * sizeof(float));
+    if (mpx_buffer == NULL) {
+        fprintf(stderr, "Error: out of memory allocating MPX buffer (%zu bytes).\n",
+                (size_t)LENGTH * sizeof(float));
+        goto cleanup;
+    }
+
     // Set the format of the output file
-    SNDFILE *outf;
     SF_INFO sfinfo;
 
     sfinfo.frames = LENGTH;
@@ -67,35 +79,36 @@ int main(int argc, char **argv) {
     sfinfo.format = SF_FORMAT_WAV | SF_FORMAT_PCM_16;
     sfinfo.sections = 1;
     sfinfo.seekable = 0;
-    
+
     // Open the output file
     const char *out_file = argv[2];
     if (! (outf = sf_open(out_file, SFM_WRITE, &sfinfo))) {
         fprintf(stderr, "Error: could not open output file %s.\n", out_file);
-        return EXIT_FAILURE;
+        goto cleanup;
     }
-
-    float mpx_buffer[LENGTH];
 
     for(int j=0; j<40; j++) {
         if( fm_mpx_get_samples(mpx_buffer) < 0 ) break;
-        
-        // scale samples
+
         for(int i=0; i<LENGTH; i++) {
             mpx_buffer[i] /= 10.;
         }
 
         if(sf_write_float(outf, mpx_buffer, LENGTH) != LENGTH) {
-            fprintf(stderr, "Error: writing to file %s.\n", argv[2]);
-            return EXIT_FAILURE;
+            fprintf(stderr, "Error: writing to file %s.\n", out_file);
+            goto cleanup;
         }
     }
-    
-    if(sf_close(outf) ) {
+
+    exit_code = EXIT_SUCCESS;
+
+cleanup:
+    if (outf && sf_close(outf)) {
         fprintf(stderr, "Error: closing file %s.\n", argv[2]);
     }
-    
-    fm_mpx_close();
-
-    return EXIT_SUCCESS;
+    if (fm_mpx_opened) {
+        fm_mpx_close();
+    }
+    free(mpx_buffer);
+    return exit_code;
 }

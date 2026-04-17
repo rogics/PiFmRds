@@ -31,6 +31,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <fcntl.h>
 #include <unistd.h>
 #include <assert.h>
+#include <errno.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -48,12 +49,12 @@ void *mapmem(unsigned base, unsigned size)
     base = base - offset;
     /* open /dev/mem */
     if ((mem_fd = open("/dev/mem", O_RDWR|O_SYNC) ) < 0) {
-        printf("can't open /dev/mem\nThis program should be run as root. Try prefixing command with: sudo\n");
-        exit (-1);
+        fprintf(stderr, "mapmem: can't open /dev/mem (run as root?)\n");
+        return NULL;
     }
     void *mem = mmap(
         0,
-        size,
+        size + offset,
         PROT_READ|PROT_WRITE,
         MAP_SHARED/*|MAP_FIXED*/,
         mem_fd,
@@ -61,22 +62,29 @@ void *mapmem(unsigned base, unsigned size)
 #ifdef DEBUG
     printf("base=0x%x, mem=%p\n", base, mem);
 #endif
-    if (mem == MAP_FAILED) {
-        printf("mmap error %p\n", mem);
-        exit (-1);
-    }
     close(mem_fd);
+    if (mem == MAP_FAILED) {
+        fprintf(stderr, "mapmem: mmap failed: %s\n", strerror(errno));
+        return NULL;
+    }
     return (char *)mem + offset;
 }
 
 void *unmapmem(void *addr, unsigned size)
 {
-    int s = munmap(addr, size);
+    if (addr == NULL) return NULL;
+    /* Re-compute the page offset that mapmem added so we hand back
+     * a page-aligned base to munmap. Without this, unmapping a
+     * peripheral at e.g. base+0x74 would call munmap(base+0x74, ...),
+     * which on some kernels silently fails (ENOMEM / EINVAL) and
+     * leaks the mapping. */
+    uintptr_t p = (uintptr_t)addr;
+    unsigned offset = p % PAGE_SIZE;
+    void *page_base = (void *)(p - offset);
+    int s = munmap(page_base, size + offset);
     if (s != 0) {
-        printf("munmap error %d\n", s);
-        exit (-1);
+        fprintf(stderr, "unmapmem: munmap failed: %s\n", strerror(errno));
     }
-
     return NULL;
 }
 
