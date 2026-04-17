@@ -110,6 +110,7 @@
 #include "control_pipe.h"
 
 #include "mailbox.h"
+#include "pifm_common.h"
 #define MBFILE            DEVICE_FILE_NAME    /* From mailbox.h */
 
 #if (RASPI)==1
@@ -137,13 +138,31 @@
 #define NUM_SAMPLES        50000
 #define NUM_CBS            (NUM_SAMPLES * 2)
 
+/* DMA control register (CS) flags. See BCM2835 ARM Peripherals
+ * section 4.2.1 ("DMA Control and Status register"). */
 #define BCM2708_DMA_NO_WIDE_BURSTS    (1<<26)
-#define BCM2708_DMA_WAIT_RESP        (1<<3)
-#define BCM2708_DMA_D_DREQ        (1<<6)
+#define BCM2708_DMA_WAIT_RESP         (1<<3)
+#define BCM2708_DMA_D_DREQ            (1<<6)
 #define BCM2708_DMA_PER_MAP(x)        ((x)<<16)
-#define BCM2708_DMA_END            (1<<1)
-#define BCM2708_DMA_RESET        (1<<31)
-#define BCM2708_DMA_INT            (1<<2)
+#define BCM2708_DMA_END               (1<<1)
+#define BCM2708_DMA_RESET             (1<<31)
+#define BCM2708_DMA_INT               (1<<2)
+
+/* Additional DMA CS bits used to start the engine (decomposes the
+ * previously bare 0x10880001 literal). */
+#define BCM2708_DMA_PRIORITY(x)       ((x)<<16)   /* AXI priority (0-15) */
+#define BCM2708_DMA_PANIC_PRIORITY(x) ((x)<<20)   /* AXI panic priority */
+#define BCM2708_DMA_WAIT_FOR_OUTSTANDING_WRITES  (1<<28)
+#define BCM2708_DMA_ACTIVE            (1<<0)
+
+/* DMA CS "start" word: priority 8, panic priority 8,
+ * wait-for-outstanding-writes, start the engine.  Previously just
+ * the bare literal 0x10880001. */
+#define DMA_CS_GO                                                    \
+    (BCM2708_DMA_WAIT_FOR_OUTSTANDING_WRITES |                       \
+     BCM2708_DMA_PANIC_PRIORITY(8) |                                 \
+     BCM2708_DMA_PRIORITY(8) |                                       \
+     BCM2708_DMA_ACTIVE)
 
 #define DMA_CS            (0x00/4)
 #define DMA_CONBLK_AD        (0x04/4)
@@ -269,8 +288,8 @@ do_cleanup_and_exit(int code)
         // Set GPIO4 to be an output (instead of ALT FUNC 0, which is the clock).
         gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 12)) | (1 << 12);
 
-        // Disable the clock generator.
-        clk_reg[GPCLK_CNTL] = 0x5A;
+        // Disable the clock generator (write password only, all enable bits zero).
+        clk_reg[GPCLK_CNTL] = CM_PASSWD >> 24;
     }
 
     if (dma_reg && mbox.virt_addr) {
@@ -418,9 +437,9 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 12)) | (4 << 12);
 
     // Program GPCLK to use MASH setting 1, so fractional dividers work
-    clk_reg[GPCLK_CNTL] = 0x5A << 24 | 6;
+    clk_reg[GPCLK_CNTL] = CM_PASSWD | 6;
     udelay(100);
-    clk_reg[GPCLK_CNTL] = 0x5A << 24 | 1 << 9 | 1 << 4 | 6;
+    clk_reg[GPCLK_CNTL] = CM_PASSWD | 1 << 9 | 1 << 4 | 6;
 
     ctl = (struct control_data_s *) mbox.virt_addr;
     dma_cb_t *cbp = ctl->cb;
@@ -434,7 +453,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
 
 
     for (int i = 0; i < NUM_SAMPLES; i++) {
-        ctl->sample[i] = 0x5a << 24 | freq_ctl;    // Silence
+        ctl->sample[i] = CM_PASSWD | freq_ctl;    // Silence
         // Write a frequency sample
         cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP;
         cbp->src = mem_virt_to_phys(ctl->sample + i);
@@ -479,12 +498,12 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
 
     pwm_reg[PWM_CTL] = 0;
     udelay(10);
-    clk_reg[PWMCLK_CNTL] = 0x5A000006;              // Source=PLLD and disable
+    clk_reg[PWMCLK_CNTL] = CM_PASSWD | 0x06;        // Source=PLLD and disable
     udelay(100);
     // theorically : 1096 + 2012*2^-12
-    clk_reg[PWMCLK_DIV] = 0x5A000000 | (idivider<<12) | fdivider;
+    clk_reg[PWMCLK_DIV] = CM_PASSWD | (idivider<<12) | fdivider;
     udelay(100);
-    clk_reg[PWMCLK_CNTL] = 0x5A000216;              // Source=PLLD and enable + MASH filter 1
+    clk_reg[PWMCLK_CNTL] = CM_PASSWD | 0x0216;      // Source=PLLD and enable + MASH filter 1
     udelay(100);
     pwm_reg[PWM_RNG1] = 2;
     udelay(10);
@@ -502,7 +521,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     dma_reg[DMA_CS] = BCM2708_DMA_INT | BCM2708_DMA_END;
     dma_reg[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);
     dma_reg[DMA_DEBUG] = 7; // clear debug error flags
-    dma_reg[DMA_CS] = 0x10880001;    // go, mid priority, wait for outstanding writes
+    dma_reg[DMA_CS] = DMA_CS_GO;    // go, priority 8/panic 8, wait for outstanding writes
 
 
     size_t last_cb = (size_t)ctl->cb;
@@ -516,7 +535,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     if(fm_mpx_open(audio_file, DATA_SIZE) < 0) return 1;
 
     // Initialize the RDS modulator
-    char myps[9] = {0};
+    char myps[PS_BUF_SIZE] = {0};
     set_rds_pi(pi);
     set_rds_rt(rt);
     uint16_t count = 0;
@@ -592,7 +611,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
                 data_index = 0;
             }
 
-            float dval = data[data_index] * (DEVIATION / 10.);
+            float dval = data[data_index] * (DEVIATION / MPX_SCALE_DIV);
             data_index++;
             data_len--;
 
@@ -600,7 +619,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
             //int frac = (int)((dval - (float)intval) * SUBSIZE);
 
 
-            ctl->sample[last_sample++] = (0x5A << 24 | freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
+            ctl->sample[last_sample++] = (CM_PASSWD | freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
             if (last_sample == NUM_SAMPLES)
                 last_sample = 0;
 

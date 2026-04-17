@@ -26,9 +26,8 @@
 
 #include "rds_strings.h"
 #include "waveforms.h"
+#include "pifm_common.h"
 
-#define RT_LENGTH 64
-#define PS_LENGTH 8
 #define GROUP_LENGTH 4
 
 static struct {
@@ -239,11 +238,11 @@ void set_rds_pi(uint16_t pi_code) {
 }
 
 void set_rds_rt(const char *rt) {
-    fill_rds_string(rds_params.rt, rt, 64);
+    fill_rds_string(rds_params.rt, rt, RT_LENGTH);
 }
 
 void set_rds_ps(const char *ps) {
-    fill_rds_string(rds_params.ps, ps, 8);
+    fill_rds_string(rds_params.ps, ps, PS_LENGTH);
 }
 
 void set_rds_ta(int ta) {

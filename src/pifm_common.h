@@ -40,4 +40,26 @@
  * in rds.c for efficient modulation. */
 #define MPX_SAMPLE_RATE 228000
 
+/* Audio filter cutoff: default low-pass cutoff for the input audio
+ * (slightly below the nominal 15 kHz to allow for filter slope). */
+#define AUDIO_LPF_CUTOFF_HZ 15000
+#define AUDIO_LPF_CUTOFF_FACTOR 0.8f
+
+/* BCM2835 clock manager password.  Every write to a CM register must
+ * OR in this constant or the hardware silently ignores the write.
+ * See BCM2835 ARM peripherals datasheet section 6.3. */
+#define CM_PASSWD               (0x5A << 24)
+
+/* MPX mixing gains. These are the amplitude scalars applied to the
+ * individual signal components before they are summed into the MPX
+ * multiplex, chosen so the peak combined amplitude does not clip. */
+#define MPX_AUDIO_GAIN          4.05f   /* mono (or L+R) audio */
+#define MPX_STEREO_DIFF_GAIN    4.05f   /* stereo (L-R) audio */
+#define MPX_PILOT_GAIN          0.9f    /* 19 kHz stereo pilot */
+
+/* RDS group multiplex ratio: the RDS BPSK envelope is scaled by
+ * 1/10 when mixed into the MPX, and the final MPX sample is divided
+ * by 10 before DMA -- MPX_SCALE_DIV is that divisor. */
+#define MPX_SCALE_DIV           10.0f
+
 #endif /* PIFM_COMMON_H */

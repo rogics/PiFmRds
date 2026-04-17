@@ -29,6 +29,7 @@
 #include <math.h>
 
 #include "rds.h"
+#include "pifm_common.h"
 
 
 #ifndef M_PI
@@ -106,8 +107,8 @@ int fm_mpx_open(const char *filename, size_t len) {
         }
             
         int in_samplerate = sfinfo.samplerate;
-        downsample_factor = 228000. / in_samplerate;
-    
+        downsample_factor = (float)MPX_SAMPLE_RATE / in_samplerate;
+
         printf("Input: %d Hz, upsampling factor: %.2f\n", in_samplerate, downsample_factor);
 
         channels = sfinfo.channels;
@@ -119,19 +120,19 @@ int fm_mpx_open(const char *filename, size_t len) {
     
     
         // Create the low-pass FIR filter
-        float cutoff_freq = 15000 * .8;
-        if(in_samplerate/2 < cutoff_freq) cutoff_freq = in_samplerate/2 * .8;
-    
-    
-    
-        low_pass_fir[FIR_HALF_SIZE-1] = 2 * cutoff_freq / 228000 /2;
+        float cutoff_freq = AUDIO_LPF_CUTOFF_HZ * AUDIO_LPF_CUTOFF_FACTOR;
+        if(in_samplerate/2 < cutoff_freq) cutoff_freq = in_samplerate/2 * AUDIO_LPF_CUTOFF_FACTOR;
+
+
+
+        low_pass_fir[FIR_HALF_SIZE-1] = 2 * cutoff_freq / MPX_SAMPLE_RATE / 2;
         // Here we divide this coefficient by two because it will be counted twice
         // when applying the filter
 
         // Only store half of the filter since it is symmetric
         for(int i=1; i<FIR_HALF_SIZE; i++) {
             low_pass_fir[FIR_HALF_SIZE-1-i] =
-                sin(2 * M_PI * cutoff_freq * i / 228000) / (M_PI * i)  // sinc
+                sin(2 * M_PI * cutoff_freq * i / MPX_SAMPLE_RATE) / (M_PI * i)  // sinc
                 * (.54 - .46 * cos(2*M_PI * (i+FIR_HALF_SIZE) / (2*FIR_HALF_SIZE)));
                                                               // Hamming window
         }
@@ -241,14 +242,14 @@ int fm_mpx_get_samples(float *mpx_buffer) {
         // End of FIR filter
         
 
-        mpx_buffer[i] = 
-            mpx_buffer[i] +    // RDS data samples are currently in mpx_buffer
-            4.05*out_mono;     // Unmodulated monophonic (or stereo-sum) signal
-            
+        mpx_buffer[i] =
+            mpx_buffer[i] +                       // RDS data samples are currently in mpx_buffer
+            MPX_AUDIO_GAIN * out_mono;            // Unmodulated monophonic (or stereo-sum) signal
+
         if(channels>1) {
             mpx_buffer[i] +=
-                4.05 * carrier_38[phase_38] * out_stereo + // Stereo difference signal
-                .9*carrier_19[phase_19];                  // Stereo pilot tone
+                MPX_STEREO_DIFF_GAIN * carrier_38[phase_38] * out_stereo + // Stereo difference
+                MPX_PILOT_GAIN * carrier_19[phase_19];                     // Stereo pilot tone
 
             phase_19++;
             phase_38++;
