@@ -253,11 +253,15 @@ int fm_mpx_get_samples(float *mpx_buffer) {
 
 
 int fm_mpx_close(void) {
-    if(sf_close(inf) ) {
-        fprintf(stderr, "Error closing audio file");
+    if(inf != NULL && sf_close(inf)) {
+        fprintf(stderr, "Error closing audio file\n");
     }
-    
-    if(audio_buffer != NULL) free(audio_buffer);
-    
+    inf = NULL;
+
+    if(audio_buffer != NULL) {
+        free(audio_buffer);
+        audio_buffer = NULL;
+    }
+
     return 0;
 }
