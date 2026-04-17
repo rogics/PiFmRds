@@ -228,8 +228,8 @@ typedef struct {
 
 static struct {
     int handle;            /* From mbox_open() */
-    unsigned mem_ref;    /* From mem_alloc() */
-    unsigned bus_addr;    /* From mem_lock() */
+    unsigned mem_ref;    /* From mbox_mem_alloc() */
+    unsigned bus_addr;    /* From mbox_mem_lock() */
     uint8_t *virt_addr;    /* From mapmem() */
 } mbox;
 
@@ -298,12 +298,12 @@ do_cleanup_and_exit(int code)
     }
 
     fm_mpx_close();
-    close_control_pipe();
+    control_pipe_close();
 
     if (mbox.virt_addr != NULL) {
         unmapmem(mbox.virt_addr, NUM_PAGES * 4096);
-        mem_unlock(mbox.handle, mbox.mem_ref);
-        mem_free(mbox.handle, mbox.mem_ref);
+        mbox_mem_unlock(mbox.handle, mbox.mem_ref);
+        mbox_mem_free(mbox.handle, mbox.mem_ref);
         mbox.virt_addr = NULL;
     }
 
@@ -418,12 +418,12 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     if (mbox.handle < 0)
         fatal("Failed to open mailbox. Check kernel support for vcio / BCM2708 mailbox.\n");
     printf("Allocating physical memory: size = %zu     ", NUM_PAGES * 4096);
-    if(! (mbox.mem_ref = mem_alloc(mbox.handle, NUM_PAGES * 4096, 4096, MEM_FLAG))) {
+    if(! (mbox.mem_ref = mbox_mem_alloc(mbox.handle, NUM_PAGES * 4096, 4096, MEM_FLAG))) {
         fatal("Could not allocate memory.\n");
     }
     // TODO: How do we know that succeeded?
     printf("mem_ref = %u     ", mbox.mem_ref);
-    if(! (mbox.bus_addr = mem_lock(mbox.handle, mbox.mem_ref))) {
+    if(! (mbox.bus_addr = mbox_mem_lock(mbox.handle, mbox.mem_ref))) {
         fatal("Could not lock memory.\n");
     }
     printf("bus_addr = %x     ", mbox.bus_addr);
@@ -524,7 +524,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     dma_reg[DMA_CS] = DMA_CS_GO;    // go, priority 8/panic 8, wait for outstanding writes
 
 
-    size_t last_cb = (size_t)ctl->cb;
+    size_t last_cb_virt_addr = (size_t)ctl->cb;
 
     // Data structures for baseband data
     float data[DATA_SIZE];
@@ -535,15 +535,15 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     if(fm_mpx_open(audio_file, DATA_SIZE) < 0) return 1;
 
     // Initialize the RDS modulator
-    char myps[PS_BUF_SIZE] = {0};
-    set_rds_pi(pi);
-    set_rds_rt(rt);
-    uint16_t count = 0;
-    uint16_t count2 = 0;
+    char generated_ps[PS_BUF_SIZE] = {0};
+    rds_set_pi(pi);
+    rds_set_rt(rt);
+    uint16_t ps_cycle_counter = 0;
+    uint16_t ps_numeric_counter = 0;
     int varying_ps = 0;
 
     if(ps) {
-        set_rds_ps(ps);
+        rds_set_ps(ps);
         printf("PI: %04X, PS: \"%s\".\n", pi, ps);
     } else {
         printf("PI: %04X, PS: <Varying>.\n", pi);
@@ -555,7 +555,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     if(control_pipe) {
         printf("Waiting for control pipe `%s` to be opened by the writer, e.g. "
                "by running `cat >%s`.\n", control_pipe, control_pipe);
-        if(open_control_pipe(control_pipe) == 0) {
+        if(control_pipe_open(control_pipe) == 0) {
             printf("Reading control commands on %s.\n", control_pipe);
         } else {
             printf("Failed to open control pipe: %s.\n", control_pipe);
@@ -575,26 +575,26 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
 
         // Default (varying) PS
         if(varying_ps) {
-            if(count == 512) {
-                snprintf(myps, 9, "%08d", count2);
-                set_rds_ps(myps);
-                count2++;
+            if(ps_cycle_counter == 512) {
+                snprintf(generated_ps, PS_BUF_SIZE, "%08d", ps_numeric_counter);
+                rds_set_ps(generated_ps);
+                ps_numeric_counter++;
             }
-            if(count == 1024) {
-                set_rds_ps("RPi-Live");
-                count = 0;
+            if(ps_cycle_counter == 1024) {
+                rds_set_ps("RPi-Live");
+                ps_cycle_counter = 0;
             }
-            count++;
+            ps_cycle_counter++;
         }
 
-        if(control_pipe && poll_control_pipe() == CONTROL_PIPE_PS_SET) {
+        if(control_pipe && control_pipe_poll() == CONTROL_PIPE_PS_SET) {
             varying_ps = 0;
         }
 
         usleep(5000);
 
         size_t cur_cb = mem_phys_to_virt(dma_reg[DMA_CONBLK_AD]);
-        int last_sample = (last_cb - (size_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
+        int last_sample = (last_cb_virt_addr - (size_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
         int this_sample = (cur_cb - (size_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
         int free_slots = this_sample - last_sample;
 
@@ -625,7 +625,7 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
 
             free_slots -= SUBSIZE;
         }
-        last_cb = (size_t)(mbox.virt_addr + last_sample * sizeof(dma_cb_t) * 2);
+        last_cb_virt_addr = (size_t)(mbox.virt_addr + last_sample * sizeof(dma_cb_t) * 2);
     }
 
     return 0;

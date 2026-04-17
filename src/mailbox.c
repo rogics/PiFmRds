@@ -108,7 +108,7 @@ static int mbox_property(int file_desc, void *buf)
     return ret_val;
 }
 
-unsigned mem_alloc(int file_desc, unsigned size, unsigned align, unsigned flags)
+unsigned mbox_mem_alloc(int file_desc, unsigned size, unsigned align, unsigned flags)
 {
     int i=0;
     unsigned p[32];
@@ -129,7 +129,7 @@ unsigned mem_alloc(int file_desc, unsigned size, unsigned align, unsigned flags)
     return p[5];
 }
 
-unsigned mem_free(int file_desc, unsigned handle)
+unsigned mbox_mem_free(int file_desc, unsigned handle)
 {
     int i=0;
     unsigned p[32];
@@ -148,7 +148,7 @@ unsigned mem_free(int file_desc, unsigned handle)
     return p[5];
 }
 
-unsigned mem_lock(int file_desc, unsigned handle)
+unsigned mbox_mem_lock(int file_desc, unsigned handle)
 {
     int i=0;
     unsigned p[32];
@@ -167,7 +167,7 @@ unsigned mem_lock(int file_desc, unsigned handle)
     return p[5];
 }
 
-unsigned mem_unlock(int file_desc, unsigned handle)
+unsigned mbox_mem_unlock(int file_desc, unsigned handle)
 {
     int i=0;
     unsigned p[32];

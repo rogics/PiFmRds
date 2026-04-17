@@ -162,7 +162,7 @@ int fm_mpx_open(const char *filename, size_t len) {
 // samples provided by this function are in 0..10: they need to be divided by
 // 10 after.
 int fm_mpx_get_samples(float *mpx_buffer) {
-    get_rds_samples(mpx_buffer, length);
+    rds_get_samples(mpx_buffer, length);
 
     if(inf  == NULL) return 0; // if there is no audio, stop here
     
@@ -223,21 +223,21 @@ int fm_mpx_get_samples(float *mpx_buffer) {
         */
         float out_mono = 0;
         float out_stereo = 0;
-        int ifbi = fir_index;  // ifbi = increasing FIR Buffer Index
-        int dfbi = fir_index;  // dfbi = decreasing FIR Buffer Index
+        int fir_idx_forward  = fir_index;  // walks the buffer forward from the insertion point
+        int fir_idx_backward = fir_index;  // walks the buffer backward from the insertion point
         for(int fi=0; fi<FIR_HALF_SIZE; fi++) {  // fi = Filter Index
-            dfbi--;
-            if(dfbi < 0) dfbi = FIR_SIZE-1;
-            out_mono += 
-                low_pass_fir[fi] * 
-                    (fir_buffer_mono[ifbi] + fir_buffer_mono[dfbi]);
+            fir_idx_backward--;
+            if(fir_idx_backward < 0) fir_idx_backward = FIR_SIZE-1;
+            out_mono +=
+                low_pass_fir[fi] *
+                    (fir_buffer_mono[fir_idx_forward] + fir_buffer_mono[fir_idx_backward]);
             if(channels > 1) {
-                out_stereo += 
-                    low_pass_fir[fi] * 
-                        (fir_buffer_stereo[ifbi] + fir_buffer_stereo[dfbi]);
+                out_stereo +=
+                    low_pass_fir[fi] *
+                        (fir_buffer_stereo[fir_idx_forward] + fir_buffer_stereo[fir_idx_backward]);
             }
-            ifbi++;
-            if(ifbi >= FIR_SIZE) ifbi = 0;
+            fir_idx_forward++;
+            if(fir_idx_forward >= FIR_SIZE) fir_idx_forward = 0;
         }
         // End of FIR filter
         

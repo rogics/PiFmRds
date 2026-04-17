@@ -24,11 +24,11 @@
 
 #include <stdint.h>
 
-void get_rds_samples(float *buffer, int count);
-void set_rds_pi(uint16_t pi_code);
-void set_rds_rt(const char *rt);
-void set_rds_ps(const char *ps);
-void set_rds_ta(int ta);
+void rds_get_samples(float *buffer, int count);
+void rds_set_pi(uint16_t pi_code);
+void rds_set_rt(const char *rt);
+void rds_set_ps(const char *ps);
+void rds_set_ta(int ta);
 
 
 #endif /* RDS_H */

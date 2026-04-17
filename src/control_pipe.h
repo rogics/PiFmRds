@@ -28,8 +28,8 @@
 #define CONTROL_PIPE_RT_SET 2
 #define CONTROL_PIPE_TA_SET 3
 
-int open_control_pipe(const char *filename);
-int close_control_pipe(void);
-int poll_control_pipe(void);
+int control_pipe_open(const char *filename);
+int control_pipe_close(void);
+int control_pipe_poll(void);
 
 #endif /* CONTROL_PIPE_H */

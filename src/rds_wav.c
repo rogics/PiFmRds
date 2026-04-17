@@ -48,9 +48,9 @@ int main(int argc, char **argv) {
         return EXIT_FAILURE;
     }
 
-    set_rds_pi(0x1234);
-    set_rds_ps(argv[3]);
-    set_rds_rt(argv[3]);
+    rds_set_pi(0x1234);
+    rds_set_ps(argv[3]);
+    rds_set_rt(argv[3]);
 
     const char *in_file = argv[1];
     if(strcmp("NONE", argv[1]) == 0) in_file = NULL;

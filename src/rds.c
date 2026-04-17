@@ -165,7 +165,7 @@ static void get_rds_group(int *buffer) {
    envelope with a 57 kHz carrier, which is very efficient as 57 kHz is 4 times the
    sample frequency we are working at (228 kHz).
  */
-void get_rds_samples(float *buffer, int count) {
+void rds_get_samples(float *buffer, int count) {
     static int bit_buffer[BITS_PER_GROUP];
     static int bit_pos = BITS_PER_GROUP;
     static float sample_buffer[SAMPLE_BUFFER_SIZE] = {0};
@@ -233,18 +233,18 @@ void get_rds_samples(float *buffer, int count) {
     }
 }
 
-void set_rds_pi(uint16_t pi_code) {
+void rds_set_pi(uint16_t pi_code) {
     rds_params.pi = pi_code;
 }
 
-void set_rds_rt(const char *rt) {
-    fill_rds_string(rds_params.rt, rt, RT_LENGTH);
+void rds_set_rt(const char *rt) {
+    rds_fill_string(rds_params.rt, rt, RT_LENGTH);
 }
 
-void set_rds_ps(const char *ps) {
-    fill_rds_string(rds_params.ps, ps, PS_LENGTH);
+void rds_set_ps(const char *ps) {
+    rds_fill_string(rds_params.ps, ps, PS_LENGTH);
 }
 
-void set_rds_ta(int ta) {
+void rds_set_ta(int ta) {
     rds_params.ta = ta;
 }

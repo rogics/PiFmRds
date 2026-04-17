@@ -45,7 +45,7 @@
 
 #define CONTROL_PIPE_NO_CMD 0
 
-/* Persistent state across poll_control_pipe() calls. We own the fd
+/* Persistent state across control_pipe_poll() calls. We own the fd
  * directly (not through a FILE*) so we can reliably non-block, detect
  * writer-close (EOF on read), and re-open. */
 static int  ctl_fd = -1;
@@ -72,7 +72,7 @@ static int ctl_reopen(void) {
     return 0;
 }
 
-int open_control_pipe(const char *filename) {
+int control_pipe_open(const char *filename) {
     if (filename == NULL) return -1;
     size_t n = strnlen(filename, sizeof(ctl_filename));
     if (n >= sizeof(ctl_filename)) return -1;
@@ -93,20 +93,20 @@ struct command_entry {
 };
 
 static int handle_ps(char *arg) {
-    set_rds_ps(arg);
+    rds_set_ps(arg);
     printf("PS set to: \"%s\"\n", arg);
     return CONTROL_PIPE_PS_SET;
 }
 
 static int handle_rt(char *arg) {
-    set_rds_rt(arg);
+    rds_set_rt(arg);
     printf("RT set to: \"%s\"\n", arg);
     return CONTROL_PIPE_RT_SET;
 }
 
 static int handle_ta(char *arg) {
     int ta = (strcmp(arg, "ON") == 0);
-    set_rds_ta(ta);
+    rds_set_ta(ta);
     printf("Set TA to %s\n", ta ? "ON" : "OFF");
     return CONTROL_PIPE_TA_SET;
 }
@@ -149,7 +149,7 @@ static int dispatch_line(char *line) {
  *   - writer close + later re-open (the FIFO is transparently re-opened),
  *   - overflowed lines (dropped with a warning).
  */
-int poll_control_pipe(void) {
+int control_pipe_poll(void) {
     if (ctl_fd < 0) return CONTROL_PIPE_NO_CMD;
 
     char scratch[CTL_LINE_MAX];
@@ -197,7 +197,7 @@ int poll_control_pipe(void) {
     return last_status;
 }
 
-int close_control_pipe(void) {
+int control_pipe_close(void) {
     if (ctl_fd >= 0) {
         close(ctl_fd);
         ctl_fd = -1;
