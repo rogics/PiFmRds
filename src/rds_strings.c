@@ -23,7 +23,7 @@
 #include <wchar.h>
 
 // Convert an Unicode code point to a character encoded using the RDS character set.
-char codepoint_to_rds_char(wchar_t codepoint) {
+static char codepoint_to_rds_char(wchar_t codepoint) {
     // The following table is sorted by ascending RDS character code.
     switch (codepoint) {
         case 0x000A: return 0x0A;   // LINE FEED

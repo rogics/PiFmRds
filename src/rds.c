@@ -31,7 +31,7 @@
 #define PS_LENGTH 8
 #define GROUP_LENGTH 4
 
-struct {
+static struct {
     uint16_t pi;
     int ta;
     char ps[PS_LENGTH];
@@ -56,11 +56,11 @@ struct {
 #define SAMPLE_BUFFER_SIZE (SAMPLES_PER_BIT + FILTER_SIZE)
 
 
-uint16_t offset_words[] = {0x0FC, 0x198, 0x168, 0x1B4};
+static const uint16_t offset_words[] = {0x0FC, 0x198, 0x168, 0x1B4};
 // We don't handle offset word C' here for the sake of simplicity
 
 /* Classical CRC computation */
-uint16_t crc(uint16_t block) {
+static uint16_t crc(uint16_t block) {
     uint16_t crc = 0;
     
     for(int j=0; j<BLOCK_SIZE; j++) {
@@ -80,7 +80,7 @@ uint16_t crc(uint16_t block) {
 /* Possibly generates a CT (clock time) group if the minute has just changed
    Returns 1 if the CT group was generated, 0 otherwise
 */
-int get_rds_ct_group(uint16_t *blocks) {
+static int get_rds_ct_group(uint16_t *blocks) {
     static int latest_minutes = -1;
 
     // Check time
@@ -119,7 +119,7 @@ int get_rds_ct_group(uint16_t *blocks) {
    pattern. 'ps_state' and 'rt_state' keep track of where we are in the PS (0A) sequence
    or RT (2A) sequence, respectively.
 */
-void get_rds_group(int *buffer) {
+static void get_rds_group(int *buffer) {
     static int state = 0;
     static int ps_state = 0;
     static int rt_state = 0;

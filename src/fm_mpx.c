@@ -32,42 +32,42 @@
 #define PI 3.141592654
 
 
-#define FIR_HALF_SIZE 30 
+#define FIR_HALF_SIZE 30
 #define FIR_SIZE (2*FIR_HALF_SIZE-1)
 
 
-size_t length;
+static size_t length;
 
 // coefficients of the low-pass FIR filter
-float low_pass_fir[FIR_HALF_SIZE];
+static float low_pass_fir[FIR_HALF_SIZE];
 
 
-float carrier_38[] = {0.0, 0.8660254037844386, 0.8660254037844388, 1.2246467991473532e-16, -0.8660254037844384, -0.8660254037844386};
+static const float carrier_38[] = {0.0, 0.8660254037844386, 0.8660254037844388, 1.2246467991473532e-16, -0.8660254037844384, -0.8660254037844386};
 
-float carrier_19[] = {0.0, 0.5, 0.8660254037844386, 1.0, 0.8660254037844388, 0.5, 1.2246467991473532e-16, -0.5, -0.8660254037844384, -1.0, -0.8660254037844386, -0.5};
-    
-int phase_38 = 0;
-int phase_19 = 0;
+static const float carrier_19[] = {0.0, 0.5, 0.8660254037844386, 1.0, 0.8660254037844388, 0.5, 1.2246467991473532e-16, -0.5, -0.8660254037844384, -1.0, -0.8660254037844386, -0.5};
 
-
-float downsample_factor;
+static int phase_38 = 0;
+static int phase_19 = 0;
 
 
-float *audio_buffer;
-int audio_index = 0;
-int audio_len = 0;
-float audio_pos;
-
-float fir_buffer_mono[FIR_SIZE] = {0};
-float fir_buffer_stereo[FIR_SIZE] = {0};
-int fir_index = 0;
-int channels;
-
-SNDFILE *inf;
+static float downsample_factor;
 
 
+static float *audio_buffer;
+static int audio_index = 0;
+static int audio_len = 0;
+static float audio_pos;
 
-float *alloc_empty_buffer(size_t length) {
+static float fir_buffer_mono[FIR_SIZE] = {0};
+static float fir_buffer_stereo[FIR_SIZE] = {0};
+static int fir_index = 0;
+static int channels;
+
+static SNDFILE *inf;
+
+
+
+static float *alloc_empty_buffer(size_t length) {
     float *p = malloc(length * sizeof(float));
     if(p == NULL) return NULL;
     

@@ -33,7 +33,7 @@
 
 #define CTL_BUFFER_SIZE 100
 
-FILE *f_ctl;
+static FILE *f_ctl;
 
 /*
  * Opens a file (pipe) to be used to control the RDS coder, in non-blocking mode.
