@@ -22,14 +22,18 @@
 */
 
 #include <sndfile.h>
+#include <stdio.h>
 #include <stdlib.h>
-#include <strings.h>
+#include <string.h>
+#define _USE_MATH_DEFINES
 #include <math.h>
 
 #include "rds.h"
 
 
-#define PI 3.141592654
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 
 #define FIR_HALF_SIZE 30
@@ -70,9 +74,9 @@ static SNDFILE *inf;
 static float *alloc_empty_buffer(size_t length) {
     float *p = malloc(length * sizeof(float));
     if(p == NULL) return NULL;
-    
-    bzero(p, length * sizeof(float));
-    
+
+    memset(p, 0, length * sizeof(float));
+
     return p;
 }
 
@@ -126,9 +130,9 @@ int fm_mpx_open(const char *filename, size_t len) {
 
         // Only store half of the filter since it is symmetric
         for(int i=1; i<FIR_HALF_SIZE; i++) {
-            low_pass_fir[FIR_HALF_SIZE-1-i] = 
-                sin(2 * PI * cutoff_freq * i / 228000) / (PI * i)      // sinc
-                * (.54 - .46 * cos(2*PI * (i+FIR_HALF_SIZE) / (2*FIR_HALF_SIZE)));
+            low_pass_fir[FIR_HALF_SIZE-1-i] =
+                sin(2 * M_PI * cutoff_freq * i / 228000) / (M_PI * i)  // sinc
+                * (.54 - .46 * cos(2*M_PI * (i+FIR_HALF_SIZE) / (2*FIR_HALF_SIZE)));
                                                               // Hamming window
         }
         printf("Created low-pass FIR filter for audio channels, with cutoff at %.1f Hz\n", cutoff_freq);
