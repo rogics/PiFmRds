@@ -214,6 +214,12 @@ static struct {
     uint8_t *virt_addr;    /* From mapmem() */
 } mbox;
 
+/* Set by the signal handler; polled by the main loop. Using
+ * sig_atomic_t so reads/writes are guaranteed to be atomic with
+ * respect to signal delivery. */
+static volatile sig_atomic_t g_terminate_requested = 0;
+static volatile sig_atomic_t g_terminate_signal = 0;
+
 
 
 static volatile uint32_t *pwm_reg;
@@ -240,8 +246,23 @@ udelay(int us)
     nanosleep(&ts, NULL);
 }
 
+/* Async-signal-safe: must not call printf/malloc/etc.
+ * All we do is record that a signal arrived; the real cleanup runs
+ * from the main loop in do_cleanup_and_exit(). For the truly fatal
+ * signals (SIGSEGV/BUS/FPE/ILL/ABRT) we do still perform cleanup
+ * here, accepting the async-signal-unsafety risk because the
+ * alternative is leaving the DMA engine + carrier running after the
+ * process is killed. SA_RESETHAND is used so a repeat of the same
+ * fatal signal will reach the default handler and core-dump. */
 static void
-terminate(int num)
+terminate_signal_handler(int signum)
+{
+    g_terminate_signal = signum;
+    g_terminate_requested = 1;
+}
+
+static void
+do_cleanup_and_exit(int code)
 {
     // Stop outputting and generating the clock.
     if (clk_reg && gpio_reg && mbox.virt_addr) {
@@ -264,11 +285,54 @@ terminate(int num)
         unmapmem(mbox.virt_addr, NUM_PAGES * 4096);
         mem_unlock(mbox.handle, mbox.mem_ref);
         mem_free(mbox.handle, mbox.mem_ref);
+        mbox.virt_addr = NULL;
     }
 
     printf("Terminating: cleanly deactivated the DMA engine and killed the carrier.\n");
 
-    exit(num);
+    exit(code);
+}
+
+/* Retained name for the remaining call sites that still want the
+ * combined "clean up + exit" semantics (main() on success, fatal()
+ * on startup errors). */
+static void
+terminate(int num)
+{
+    do_cleanup_and_exit(num);
+}
+
+/* Install handlers only on the signals we actually care about. The
+ * old code called sigaction() for every integer in 0..63, which
+ * installed a handler on SIGPIPE, SIGCHLD, SIGWINCH, etc. -- any of
+ * which would kill the transmitter. */
+static void
+install_signal_handlers(void)
+{
+    /* "Graceful shutdown" signals: run cleanup from the main loop. */
+    static const int graceful_signals[] = {
+        SIGINT, SIGTERM, SIGHUP, SIGQUIT,
+    };
+    /* "We just crashed" signals: cleanup from the handler itself
+     * and reset to the default disposition so a second identical
+     * signal will core-dump. */
+    static const int fatal_signals[] = {
+        SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT,
+    };
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = terminate_signal_handler;
+    sigemptyset(&sa.sa_mask);
+
+    for (size_t i = 0; i < sizeof(graceful_signals)/sizeof(graceful_signals[0]); i++) {
+        sigaction(graceful_signals[i], &sa, NULL);
+    }
+
+    sa.sa_flags = SA_RESETHAND;
+    for (size_t i = 0; i < sizeof(fatal_signals)/sizeof(fatal_signals[0]); i++) {
+        sigaction(fatal_signals[i], &sa, NULL);
+    }
 }
 
 static void
@@ -320,15 +384,10 @@ map_peripheral(uint32_t base, uint32_t len)
 
 int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *ps,
        const char *rt, float ppm, const char *control_pipe) {
-    // Catch all signals possible - it is vital we kill the DMA engine
-    // on process exit!
-    for (int i = 0; i < 64; i++) {
-        struct sigaction sa;
-
-        memset(&sa, 0, sizeof(sa));
-        sa.sa_handler = terminate;
-        sigaction(i, &sa, NULL);
-    }
+    // Install handlers on the signals we actually want to intercept
+    // (see install_signal_handlers for the list). Crucially, we no
+    // longer hook SIGPIPE / SIGCHLD / real-time signals.
+    install_signal_handlers();
 
     dma_reg = map_peripheral(DMA_VIRT_BASE, DMA_LEN);
     pwm_reg = map_peripheral(PWM_VIRT_BASE, PWM_LEN);
@@ -489,6 +548,12 @@ int tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi, const char *p
     printf("Starting to transmit on %3.1f MHz.\n", carrier_freq/1e6);
 
     for (;;) {
+        if (g_terminate_requested) {
+            int sig = g_terminate_signal;
+            printf("Caught signal %d; shutting down.\n", sig);
+            do_cleanup_and_exit(EXIT_SUCCESS);
+        }
+
         // Default (varying) PS
         if(varying_ps) {
             if(count == 512) {
