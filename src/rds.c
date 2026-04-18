@@ -97,20 +97,48 @@ static int get_rds_ct_group(uint16_t *blocks) {
         // Generate CT group
         latest_minutes = utc->tm_min;
         
+        /* §1.11: RDS MJD per EN 50067, with the usual "shift Jan/Feb
+         * back into the previous year" trick (l == 1 for those two
+         * months). The original form did (y * 365.25) and
+         * (m * 30.6001) as double and truncated to int; under
+         * -ffast-math the compiler is free to reorder / fuse those
+         * operations, which can produce an off-by-one on boundary
+         * dates. Rewriting with pure integer arithmetic (1461/4 ==
+         * 365.25 exactly, 306001/10000 == 30.6001 exactly for the
+         * range of m we care about) removes that risk. */
         int l = utc->tm_mon <= 1 ? 1 : 0;
-        int mjd = 14956 + utc->tm_mday + 
-                        (int)((utc->tm_year - l) * 365.25) +
-                        (int)((utc->tm_mon + 2 + l*12) * 30.6001);
-        
+        int y = utc->tm_year - l;
+        int m = utc->tm_mon + 2 + l*12;
+        int mjd = 14956 + utc->tm_mday + (y * 1461) / 4 + (m * 306001) / 10000;
+
         blocks[1] = 0x4400 | (mjd>>15);
         blocks[2] = (mjd<<1) | (utc->tm_hour>>4);
         blocks[3] = (utc->tm_hour & 0xF)<<12 | utc->tm_min<<6;
-        
+
+        /* §1.10: tm_gmtoff is a BSD/glibc extension. Fall back to
+         * recomputing the offset from timegm() if it isn't available
+         * (e.g. some uClibc/musl configurations, strict-POSIX builds).
+         * Either way we report the offset in half-hour steps as
+         * required by the RDS CT group. */
         utc = localtime(&now);
-        
-        int offset = utc->tm_gmtoff / (30 * 60);
-        blocks[3] |= abs(offset);
-        if(offset < 0) blocks[3] |= 0x20;
+        long gmt_off_seconds;
+#if defined(__USE_MISC) || defined(__USE_BSD) || defined(__GLIBC__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+        gmt_off_seconds = utc->tm_gmtoff;
+#else
+        {
+            struct tm local_tm = *utc;
+            time_t local_as_utc = timegm(&local_tm);
+            gmt_off_seconds = (long)difftime(local_as_utc, now);
+        }
+#endif
+        int offset = (int)(gmt_off_seconds / (30 * 60));
+        /* §4.8: abs(INT_MIN) is UB; split the sign-handling explicitly. */
+        if (offset < 0) {
+            blocks[3] |= 0x20;
+            blocks[3] |= (unsigned)(-offset) & 0x1F;
+        } else {
+            blocks[3] |= (unsigned)offset & 0x1F;
+        }
         
         //printf("Generated CT: %04X %04X %04X\n", blocks[1], blocks[2], blocks[3]);
         return 1;
@@ -137,7 +165,7 @@ static void get_rds_group(int *buffer) {
             blocks[3] = rds_params.ps[ps_state*2]<<8 | rds_params.ps[ps_state*2+1];
             ps_state++;
             if(ps_state >= 4) ps_state = 0;
-        } else { // state == 5
+        } else { // state == 4 (pattern length 5: 4x0A + 1x2A, wraps at 5)
             blocks[1] = 0x2400 | rt_state;
             blocks[2] = rds_params.rt[rt_state*4+0]<<8 | rds_params.rt[rt_state*4+1];
             blocks[3] = rds_params.rt[rt_state*4+2]<<8 | rds_params.rt[rt_state*4+3];

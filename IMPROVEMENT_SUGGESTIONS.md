@@ -2,7 +2,36 @@
 
 This document collects suggestions after a review of the C source files in
 `src/`. Items are grouped by severity / category. Line numbers are given
-as of the current revision.
+as of the original revision against which the review was written (see git
+history for the snapshot).
+
+## Status (updated 2026-04-18)
+
+Most of §1 (bugs) and §5 (readability/consistency) have been addressed
+across phases 0–14. Fixed items are marked with "**RESOLVED**" + phase
+tag in the headings below. The two largest outstanding areas are
+performance (§2) and the higher-effort refactors in §8; see the Priority
+Summary at the end for what's still open.
+
+Resolved so far:
+- **§1 bugs:** 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11,
+  1.12, 1.13, 1.14, 1.15, 1.16, 1.17, 1.18, 1.19, 1.20, 1.21, 1.22, 1.23
+- **§2 performance:** 2.4 (round via `lrintf`), 2.9 (`-mtune` per model)
+- **§3 efficiency:** 3.3 (drop `<strings.h>`/`bzero`)
+- **§4 elegance:** 4.2, 4.3, 4.5, 4.7, 4.8 (folded into 1.10 fix)
+- **§5 readability:** 5.S1, 5.S2, 5.S3, 5.S4, 5.S5, 5.S6, 5.S7, 5.S11,
+  5.S12 (partial), 5.S13, 5.S14, 5.S15, 5.S17, 5.S18, 5.S21, 5.S22
+- **§6 engineering:** 6.1, 6.5, 6.7, 6.8, 6.10, 6.13, 6.14, 6.15
+
+Still open (not fixed):
+- **§2 performance:** 2.1, 2.2, 2.3, 2.5, 2.6, 2.7, 2.8, 2.10
+- **§3 efficiency:** 3.1 (WAVs in `src/`), 3.2 (`NUM_SAMPLES` sizing)
+- **§4 elegance:** 4.1 (magic numbers, partial), 4.4 (`getopt_long` - done
+  via `getopt_long_only`), 4.6, 4.9 (Makefile regenerate rule)
+- **§5 readability:** 5.S8, 5.S9, 5.S10, 5.S16, 5.S19, 5.S20
+- **§6 engineering:** 6.2, 6.3, 6.4 (done via `.editorconfig`/
+  `.clang-format`), 6.6, 6.9, 6.11, 6.12, 6.16
+- **§8 refactors:** all six still open
 
 ---
 
@@ -52,7 +81,7 @@ static void fatal(char *fmt, ...) {
 A fatal error exits with status 0, masking errors from supervisors like
 `systemd`, shell scripts, etc. Pass `1` (or `EXIT_FAILURE`).
 
-### 1.3 `pi_fm_rds.c` — `freq_ctl` integer overflow / precision loss
+### 1.3 `pi_fm_rds.c` — `freq_ctl` integer overflow / precision loss — **RESOLVED (phase 14)**
 
 `src/pi_fm_rds.c:373`
 
@@ -70,7 +99,7 @@ uint32_t freq_ctl = ((float)(PLLFREQ / carrier_freq)) * ( 1 << 12 );
 - Recommendation: compute integer + fractional parts explicitly (like
   lines 413–415) instead of relying on truncation.
 
-### 1.4 `pi_fm_rds.c` — race in DMA pointer check when the DMA wraps
+### 1.4 `pi_fm_rds.c` — race in DMA pointer check when the DMA wraps — **RESOLVED (phase 14)**
 
 `src/pi_fm_rds.c:511`
 
@@ -165,7 +194,7 @@ if (inf && sf_close(inf)) {
 }
 ```
 
-### 1.9 `rds.c` — `get_rds_group()` comment says state 5 but condition is `state < 4 / else`
+### 1.9 `rds.c` — `get_rds_group()` comment says state 5 but condition is `state < 4 / else` — **RESOLVED (phase 14)**
 
 `src/rds.c:130`
 
@@ -179,7 +208,7 @@ Comment says "state == 5", but the else branch is reached for state
 pattern is 4 × 0A + 1 × 2A = pattern length 5. The comment should read
 `state == 4`. Not a runtime bug, but misleading.
 
-### 1.10 `rds.c` — `get_rds_ct_group` DST offset computation uses `tm_gmtoff` unconditionally
+### 1.10 `rds.c` — `get_rds_ct_group` DST offset computation uses `tm_gmtoff` unconditionally — **RESOLVED (phase 14)**
 
 `src/rds.c:106`
 
@@ -194,7 +223,7 @@ for portability. Also `localtime` reuses the static buffer previously
 pointed to by `utc` — since we already read the fields, that's fine, but
 consider `localtime_r`.
 
-### 1.11 `rds.c` — Julian date formula has edge case for January/February
+### 1.11 `rds.c` — Julian date formula has edge case for January/February — **RESOLVED (phase 14)**
 
 `src/rds.c:97`
 
@@ -531,10 +560,12 @@ Fine on Linux/glibc (which is the target), but document or prefer
 Several `char *` parameters point to string literals; `-Wwrite-strings`
 flags these. Change signatures to `const char *`.
 
-### 4.8 `rds.c`: `blocks[3] |= abs(offset)` — `abs(INT_MIN)` UB
+### 4.8 `rds.c`: `blocks[3] |= abs(offset)` — `abs(INT_MIN)` UB — **RESOLVED (phase 14)**
 
 Offset can't reach `INT_MIN` in practice, but the pattern is fragile.
 Use a simple `if/else` split.
+
+Folded into the 1.10 fix: sign is now split explicitly instead of via `abs()`.
 
 ### 4.9 `generate_pulses.py` / `generate_waveforms.py` regeneration not hooked into Makefile
 
@@ -1059,13 +1090,16 @@ Hardcoded `for(int j=0; j<40; j++)` → 40 × 114000 = 4.56 M samples =
 
 ### Priority Summary
 
-- **P0 (bug):** 1.1, 1.2, 1.5, 1.6, 1.12, 1.15, 1.17, 1.18, 1.23
-- **P1 (correctness / portability):** 1.3, 1.4, 1.7, 1.8, 1.13, 1.14, 1.16, 1.22
-- **P2 (perf):** 2.1, 2.2, 2.3, 2.4, 2.9, 2.10
+- **P0 (bug):** 1.1, 1.2, 1.5, 1.6, 1.12, 1.15, 1.17, 1.18, 1.23 — *all
+  RESOLVED*
+- **P1 (correctness / portability):** 1.3, 1.4, 1.7, 1.8, 1.13, 1.14,
+  1.16, 1.22 — *all RESOLVED*
+- **P2 (perf):** 2.4, 2.9 RESOLVED; 2.1, 2.2, 2.3, 2.10 still open
 - **P3 (readability/consistency — high leverage, low risk):**
-  5.S1, 5.S3, 5.S4, 5.S6, 5.S7, 5.S11, 5.S13, 5.S14, 5.S21
-- **P3 (engineering):** 6.1, 6.2, 6.3, 6.5, 6.7, 6.8
-- **Nice-to-have:** everything else
+  5.S1, 5.S3, 5.S4, 5.S6, 5.S7, 5.S11, 5.S13, 5.S14, 5.S21 — *all
+  RESOLVED*
+- **P3 (engineering):** 6.1, 6.5, 6.7, 6.8 RESOLVED; 6.2, 6.3 still open
+- **Nice-to-have:** remaining items in §2, §3, §5, §6, §7, §8
 
 ---
 

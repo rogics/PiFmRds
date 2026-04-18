@@ -466,9 +466,23 @@ pifm_status_t tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi,
     uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
 
 
-    // Calculate the frequency control word
-    // The fractional part is stored in the lower 12 bits
-    uint32_t freq_ctl = ((float)(PLLFREQ / carrier_freq)) * ( 1 << 12 );
+    // Calculate the frequency control word for CM_GP0DIV: the upper
+    // 20 bits are the integer divider and the lower 12 bits are the
+    // fractional divider (MASH). The previous form,
+    //
+    //     ((float)(PLLFREQ / carrier_freq)) * ( 1 << 12 )
+    //
+    // computed PLLFREQ/carrier_freq in double, narrowed to float,
+    // then scaled -- silently dropping ~6 bits of precision of the
+    // fractional part via the intermediate float. Compute the two
+    // halves explicitly in double (the same pattern used for the
+    // PWM divider below) so the full precision is preserved. The
+    // truncation semantics of the old code are kept on purpose so
+    // this fix does not nudge the transmit frequency.
+    double pll_ratio  = PLLFREQ / (double)carrier_freq;
+    uint32_t idiv     = (uint32_t)pll_ratio;
+    uint32_t fdiv     = (uint32_t)((pll_ratio - idiv) * 4096.0);
+    uint32_t freq_ctl = (idiv << 12) | (fdiv & 0xFFF);
 
 
     for (int i = 0; i < NUM_SAMPLES; i++) {
@@ -615,7 +629,27 @@ pifm_status_t tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi,
 
         usleep(5000);
 
-        size_t cur_cb = mem_phys_to_virt(dma_reg[DMA_CONBLK_AD]);
+        /* §1.4: DMA_CONBLK_AD is volatile DMA-engine state. Between
+         * "DMA reset" and "first CB loaded" it can briefly read 0, or
+         * latch a partially-updated value that is not within our
+         * control-block region; mem_phys_to_virt() would then yield a
+         * nonsense pointer and the divisions below would produce
+         * garbage sample indices. Read twice, require the two reads
+         * to agree *and* fall inside the control-block region, and
+         * skip this iteration if we can't get a stable in-range
+         * reading. */
+        uint32_t phys_cb_1 = dma_reg[DMA_CONBLK_AD];
+        uint32_t phys_cb_2 = dma_reg[DMA_CONBLK_AD];
+        if (phys_cb_1 == 0 || phys_cb_1 != phys_cb_2) {
+            continue;
+        }
+        size_t cur_cb = mem_phys_to_virt(phys_cb_1);
+        size_t cb_base = (size_t)ctl->cb;
+        size_t cb_end  = cb_base + NUM_CBS * sizeof(dma_cb_t);
+        if (cur_cb < cb_base || cur_cb >= cb_end) {
+            continue;
+        }
+
         int last_sample = (last_cb_virt_addr - (size_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
         int this_sample = (cur_cb - (size_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
         int free_slots = this_sample - last_sample;
