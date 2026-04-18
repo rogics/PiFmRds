@@ -195,12 +195,12 @@ static void *feeder_thread_main(void *arg) {
     while (!g_terminate_requested) {
         int free_slots;
         if (app->hw != NULL) {
-            /* Pace by the DMA: wait until FEEDER_REFILL_WATERMARK slots
-             * are free, then refill them all in one pass. Waking at
-             * single-slot granularity (228 kHz) would burn a full CPU
-             * on syscall overhead; batching to ~5 ms matches the
-             * historical usleep(5000) pacing. */
-            hw_rpi_wait_space(app->hw, FEEDER_REFILL_WATERMARK);
+            /* Pace at a fixed 5 ms cadence, matching the old
+             * `usleep(5000)` main loop. Exactly one nanosleep syscall
+             * per iteration: no risk of `hw_rpi_free_slots` returning
+             * above the watermark and letting the loop spin. */
+            struct timespec ts = { 0, 5L * 1000L * 1000L };
+            nanosleep(&ts, NULL);
             free_slots = hw_rpi_free_slots(app->hw);
             if (free_slots < 0) continue;
         } else {
