@@ -53,10 +53,4 @@ int           hw_rpi_free_slots(hw_rpi_t *hw);
  * into the next `n` DMA slots. `n` must be <= hw_rpi_free_slots(). */
 pifm_status_t hw_rpi_push_deltas(hw_rpi_t *hw, const int *deltas, size_t n);
 
-/* Blocking wait until at least `min_slots` free DMA slots are
- * available. Uses clock_nanosleep(CLOCK_MONOTONIC) with a deadline
- * derived from the known 228 kHz sample rate rather than a fixed
- * usleep. */
-void          hw_rpi_wait_space(hw_rpi_t *hw, int min_slots);
-
 #endif /* HW_RPI_H */

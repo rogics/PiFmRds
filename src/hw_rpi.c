@@ -434,28 +434,3 @@ pifm_status_t hw_rpi_push_deltas(hw_rpi_t *hw, const int *deltas, size_t n) {
     return PIFM_OK;
 }
 
-void hw_rpi_wait_space(hw_rpi_t *hw, int min_slots) {
-    /* §2.2: instead of a fixed 5 ms usleep, sleep until the DMA is
-     * expected to have advanced `min_slots` more slots at the known
-     * 228 kHz rate. If the ring is already drained enough, return
-     * immediately. */
-    for (;;) {
-        int free = hw_rpi_free_slots(hw);
-        if (free >= min_slots) return;
-
-        int need = (free < 0) ? min_slots : (min_slots - free);
-        if (need < 1) need = 1;
-
-        /* Sample period is 1/228000 s ~= 4386 ns. */
-        long ns = (long)need * 4386L;
-        /* Floor at 500 us so a -1 (stale DMA read) or a tiny `need`
-         * value can't turn this into a busy loop. */
-        if (ns < 500L * 1000L)        ns = 500L * 1000L;
-        /* Don't oversleep -- cap at 10 ms so starvation is detected
-         * promptly during shutdown. */
-        if (ns > 10L * 1000L * 1000L) ns = 10L * 1000L * 1000L;
-
-        struct timespec ts = { 0, ns };
-        nanosleep(&ts, NULL);
-    }
-}

@@ -20,7 +20,7 @@ for the list of historical suggestions see
      ┌─────────────────┐   SPSC ring   ┌──────────────────┐
      │ DSP producer    │──────────────▶│ DMA feeder       │
      │ SCHED_OTHER     │   (floats)    │ SCHED_FIFO       │
-     │ libsndfile I/O  │               │ clock_nanosleep  │
+     │ libsndfile I/O  │               │5 ms nanosleep    │
      └─────┬───────────┘               └─────┬────────────┘
            │                                 │
            ▼                                 ▼

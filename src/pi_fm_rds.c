@@ -16,8 +16,8 @@
  *   feeder thread  -- SPSC ring -> hw_rpi_push_deltas().
  *                     SCHED_FIFO (falls back to SCHED_OTHER if
  *                     CAP_SYS_NICE is not available). Wakes on a
- *                     deadline derived from the 228 kHz sample rate
- *                     (see hw_rpi_wait_space).
+ *                     flat 5 ms nanosleep cadence, matching the
+ *                     pre-refactor `usleep(5000)` main loop.
  *
  * The ring decouples audio-decode stalls from the DMA consumer: a
  * brief sndfile stall no longer starves the RF output, and a long
@@ -79,14 +79,6 @@ int g_log_level = LOG_LEVEL_INFO;
  * audio-I/O stalls. */
 #define RING_CAPACITY_LOG2 17
 #define RING_CAPACITY      (1u << RING_CAPACITY_LOG2)
-
-/* Feeder refill watermark, in DMA slots. The feeder only wakes once
- * this many slots have drained; it then refills them in one pass.
- * At 228 kHz, 1140 samples = 5 ms, matching the historical
- * `usleep(5000)` pacing. Anything much smaller and the feeder burns
- * a CPU core on syscall/poll overhead; anything much larger adds
- * latency to the RDS/MPX output. */
-#define FEEDER_REFILL_WATERMARK 1140
 
 /* --- signal handler / globals ------------------------------------------- */
 static volatile sig_atomic_t g_terminate_requested = 0;
@@ -184,8 +176,8 @@ static void *dsp_thread_main(void *arg) {
 }
 
 /* DMA feeder thread. Pops MPX samples out of the SPSC ring, converts
- * them to integer frequency deltas, and hands them to hw_rpi. Uses
- * hw_rpi_wait_space (deadline-based via clock_nanosleep) for pacing. */
+ * them to integer frequency deltas, and hands them to hw_rpi. Paces at
+ * a flat 5 ms cadence via nanosleep (matching the old usleep(5000)). */
 static void *feeder_thread_main(void *arg) {
     struct pifm_app *app = arg;
     float  scratch[DATA_SIZE];

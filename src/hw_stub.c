@@ -53,5 +53,3 @@ pifm_status_t hw_rpi_push_deltas(hw_rpi_t *hw, const int *deltas, size_t n) {
     (void)hw; (void)deltas; (void)n;
     return PIFM_OK;
 }
-
-void hw_rpi_wait_space(hw_rpi_t *hw, int min_slots) { (void)hw; (void)min_slots; }
