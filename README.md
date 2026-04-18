@@ -1,6 +1,16 @@
 Pi-FM-RDS
 =========
 
+> **AI-improved fork.** This tree is an AI-assisted rework of the
+> original [PiFmRds](https://github.com/ChristopheJacquet/PiFmRds) by
+> Christophe Jacquet and contributors. The on-air behaviour is
+> preserved; the internals have been hardened, restructured, and
+> test-covered. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the
+> full list of bug fixes, performance improvements, and new features;
+> see [`ARCHITECTURE.md`](ARCHITECTURE.md) for the post-refactor
+> threading model and library/driver split. Huge thanks to the
+> upstream authors — see the [Credits](#credits) section at the end.
+
 
 ## FM-RDS transmitter using the Raspberry Pi
 
@@ -235,4 +245,33 @@ The samples are played by `pi_fm_rds.c` that is adapted from Richard Hirst's [Pi
 
 --------
 
-© [Christophe Jacquet](https://jacquet.xyz/en/), 2014-2026. Released under the GNU GPL v3.
+## Credits
+
+Special thanks go to every author and contributor of the upstream
+PiFmRds project. This fork would not exist without their decade of
+reverse engineering, DSP work, and patient bug hunting.
+
+- **[Christophe Jacquet](https://jacquet.xyz/en/)** — original author
+  of PiFmRds. Designed the RDS bit pump, the FM multiplex, and the
+  integration with Richard Hirst's DMA carrier. Has maintained the
+  project since 2014.
+- **[Richard Hirst](https://github.com/richardghirst)** — author of
+  [PiFmDma](https://github.com/richardghirst/PiBits/tree/master/PiFmDma),
+  from which the DMA-driven carrier generation and clock-divider
+  trick are derived.
+- **Oliver Mattos** and **Oskar Weigl** — authors of the original
+  PiFM proof-of-concept that started the whole line of work.
+- All upstream contributors whose patches shaped the project
+  (full list in `git log` / GitHub): Raspberry Pi 2/3/4/Zero support,
+  AArch64 build fixes, non-blocking control-pipe mode, non-ASCII
+  character handling, float-precision `ppm`, Makefile and
+  static-linking improvements, and many smaller polish patches.
+
+This AI-improved version inherits their work under the same licence
+and tries hard not to regress any of it. Every behaviour change is
+called out in [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
+
+--------
+
+© [Christophe Jacquet](https://jacquet.xyz/en/), 2014-2026, and the
+AI-improved fork contributors, 2026. Released under the GNU GPL v3.

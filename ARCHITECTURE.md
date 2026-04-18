@@ -2,8 +2,8 @@
 
 This document describes the post-Tier-2-refactor structure of PiFmRds.
 For a user-facing introduction see the top-level [README](README.md);
-for the list of historical suggestions see
-[IMPROVEMENT_SUGGESTIONS.md](IMPROVEMENT_SUGGESTIONS.md).
+for the full list of changes against upstream see
+[RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 ## Layered view
 

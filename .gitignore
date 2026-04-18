@@ -8,6 +8,6 @@ src/*.o
 src/*.d
 *.o
 
-# Regression baseline artefacts (Ground rule G3 in REFACTORING_PLAN.md).
+# Regression baseline artefacts for the pre-Tier-2 MPX hash comparison.
 baseline_mpx.wav
 baseline_mpx.sha256
