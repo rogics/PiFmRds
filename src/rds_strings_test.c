@@ -25,16 +25,17 @@
 
 #include "rds_strings.h"
 
-void print_hex_bytes(char* s, size_t size) {
-    for (int i=0; i < size; i++) {
-        printf("%02X ", s[i]);
+void print_hex_bytes(const char* s, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        printf("%02X ", (unsigned char)s[i]);
     }
     printf("\n");
 }
 
-void assert_string(char* test_name, char* actual, char* expected, size_t size) {
+void assert_string(const char* test_name, const char* actual,
+                   const char* expected, size_t size) {
     bool equal = true;
-    for (int i=0; i < size; i++) {
+    for (size_t i = 0; i < size; i++) {
         if (actual[i] != expected[i]) {
             equal = false;
             break;
@@ -74,7 +75,7 @@ void test_same_sizes() {
 void test_non_ascii() {
     size_t dst_size = 20;
     char dst[dst_size];
-    char* dst_ref = "M\x97""beltr\x91""gerf\x99\x8d""e d\x82\x9b""u";
+    const char* dst_ref = "M\x97""beltr\x91""gerf\x99\x8d""e d\x82\x9b""u";
     rds_fill_string(dst, "M\xc3\xb6""beltr\xc3\xa4""gerf\xc3\xbc\xc3\x9f""e "
                          "d\xc3\xa9\xc3\xa7""u", dst_size);
     assert_string("Convert non-ASCII characters", dst, dst_ref, dst_size);

@@ -89,7 +89,9 @@ struct rds_ctx {
 };
 
 /* Classical CRC computation (pure function, no state). Exposed to
- * unit tests via rds_internal.h. */
+ * unit tests via rds_internal.h. Result is the POLY_DEG-bit (10-bit)
+ * checkword, zero-extended into the returned uint16_t. Bits above
+ * bit 9 are always zero. */
 uint16_t rds_crc(uint16_t block) {
     uint16_t crc = 0;
 
@@ -104,7 +106,11 @@ uint16_t rds_crc(uint16_t block) {
         }
     }
 
-    return crc;
+    /* Mask off any debris bits the uint16_t shift accumulated above
+     * bit 9. The production caller ignores them (the checkword
+     * emitter only reads bits 9..0), but well-defined function
+     * contract + unit tests want a canonical 10-bit result. */
+    return crc & ((1u << POLY_DEG) - 1);
 }
 
 /* MJD computation per EN 50067. Extracted into its own function so
