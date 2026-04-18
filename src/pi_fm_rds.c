@@ -6,577 +6,356 @@
  *
  * See https://github.com/ChristopheJacquet/PiFmRds
  *
- * PI-FM-RDS: RaspberryPi FM transmitter, with RDS.
+ * Main entry point for the PiFmRds FM/RDS transmitter.
  *
- * This file contains the VHF FM modulator. All credit goes to the original
- * authors, Oliver Mattos and Oskar Weigl for the original idea, and to
- * Richard Hirst for using the Pi's DMA engine, which reduced CPU usage
- * dramatically.
+ * Threading model:
+ *   main thread    -- signal handling, PS rotation, control-pipe poll,
+ *                     shutdown watchdog.
+ *   DSP thread     -- fm_mpx_ctx_get_samples() -> SPSC ring (floats).
+ *                     SCHED_OTHER; libsndfile I/O may block here.
+ *   feeder thread  -- SPSC ring -> hw_rpi_push_deltas().
+ *                     SCHED_FIFO (falls back to SCHED_OTHER if
+ *                     CAP_SYS_NICE is not available). Wakes on a
+ *                     deadline derived from the 228 kHz sample rate
+ *                     (see hw_rpi_wait_space).
  *
- * I (Christophe Jacquet) have adapted their idea to transmitting samples
- * at 228 kHz, allowing to build the 57 kHz subcarrier for RDS BPSK data.
+ * The ring decouples audio-decode stalls from the DMA consumer: a
+ * brief sndfile stall no longer starves the RF output, and a long
+ * DMA backlog can no longer block audio decode.
  *
- * To make it work on the Raspberry Pi 2, I used a fix by Richard Hirst
- * (again) to request memory using Broadcom's mailbox interface. This fix
- * was published for ServoBlaster here:
- * https://www.raspberrypi.org/forums/viewtopic.php?p=699651#p699651
+ * WARNING: transmitting on the VHF FM band is illegal in most
+ * countries without a licence. Use with a dummy load or shielded
+ * cable; not with an antenna.
  *
- * Never use this to transmit VHF-FM data through an antenna, as it is
- * illegal in most countries. This code is for testing purposes only.
- * Always connect a shielded transmission line from the RaspberryPi directly
- * to a radio receiver, so as *not* to emit radio waves.
- *
- * ---------------------------------------------------------------------------
- * These are the comments from Richard Hirst's version:
- *
- * RaspberryPi based FM transmitter.  For the original idea, see:
- *
- * http://www.icrobotics.co.uk/wiki/index.php/Turning_the_Raspberry_Pi_Into_an_FM_Transmitter
- *
- * All credit to Oliver Mattos and Oskar Weigl for creating the original code.
- *
- * I have taken their idea and reworked it to use the Pi DMA engine, so
- * reducing the CPU overhead for playing a .wav file from 100% to about 1.6%.
- *
- * I have implemented this in user space, using an idea I picked up from Joan
- * on the Raspberry Pi forums - credit to Joan for the DMA from user space
- * idea.
- *
- * The idea of feeding the PWM FIFO in order to pace DMA control blocks comes
- * from ServoBlaster, and I take credit for that :-)
- *
- * This code uses DMA channel 0 and the PWM hardware, with no regard for
- * whether something else might be trying to use it at the same time (such as
- * the 3.5mm jack audio driver).
- *
- * I know nothing much about sound, subsampling, or FM broadcasting, so it is
- * quite likely the sound quality produced by this code can be improved by
- * someone who knows what they are doing.  There may be issues realting to
- * caching, as the user space process just writes to its virtual address space,
- * and expects the DMA controller to see the data; it seems to work for me
- * though.
- *
- * NOTE: THIS CODE MAY WELL CRASH YOUR PI, TRASH YOUR FILE SYSTEMS, AND
- * POTENTIALLY EVEN DAMAGE YOUR HARDWARE.  THIS IS BECAUSE IT STARTS UP THE DMA
- * CONTROLLER USING MEMORY OWNED BY A USER PROCESS.  IF THAT USER PROCESS EXITS
- * WITHOUT STOPPING THE DMA CONTROLLER, ALL HELL COULD BREAK LOOSE AS THE
- * MEMORY GETS REALLOCATED TO OTHER PROCESSES WHILE THE DMA CONTROLLER IS STILL
- * USING IT.  I HAVE ATTEMPTED TO MINIMISE ANY RISK BY CATCHING SIGNALS AND
- * RESETTING THE DMA CONTROLLER BEFORE EXITING, BUT YOU HAVE BEEN WARNED.  I
- * ACCEPT NO LIABILITY OR RESPONSIBILITY FOR ANYTHING THAT HAPPENS AS A RESULT
- * OF YOU RUNNING THIS CODE.  IF IT BREAKS, YOU GET TO KEEP ALL THE PIECES.
- *
- * NOTE ALSO:  THIS MAY BE ILLEGAL IN YOUR COUNTRY.  HERE ARE SOME COMMENTS
- * FROM MORE KNOWLEDGEABLE PEOPLE ON THE FORUM:
- *
- * "Just be aware that in some countries FM broadcast and especially long
- * distance FM broadcast could get yourself into trouble with the law, stray FM
- * broadcasts over Airband aviation is also strictly forbidden."
- *
- * "A low pass filter is really really required for this as it has strong
- * harmonics at the 3rd, 5th 7th and 9th which sit in licensed and rather
- * essential bands, ie GSM, HAM, emergency services and others. Polluting these
- * frequencies is immoral and dangerous, whereas "breaking in" on FM bands is
- * just plain illegal."
- *
- * "Don't get caught, this GPIO use has the potential to exceed the legal
- * limits by about 2000% with a proper aerial."
- *
- *
- * As for the original code, this code is released under the GPL.
- *
- * Richard Hirst <richardghirst@gmail.com>  December 2012
+ * Released under the GPLv3.
  */
 
-#include <locale.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <string.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <getopt.h>
+#include <locale.h>
+#include <math.h>
+#include <pthread.h>
+#include <semaphore.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
-#include <math.h>
-#include <time.h>
-#include <signal.h>
-#include <getopt.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <time.h>
+#include <unistd.h>
+
 #include <sndfile.h>
 
-#include "rds.h"
-#include "fm_mpx.h"
 #include "control_pipe.h"
-
-#include "mailbox.h"
-#include "pifm_common.h"
+#include "fm_mpx.h"
+#include "hw_rpi.h"
 #include "logging.h"
-#define MBFILE            DEVICE_FILE_NAME    /* From mailbox.h */
+#include "pifm_common.h"
+#include "rds.h"
+#include "ring_spsc.h"
 
-/* Single definition of the logging verbosity dial (see logging.h).
- * Lives here because pi_fm_rds.c is always linked into the main
- * binary; rds_wav.c provides its own copy. */
 int g_log_level = LOG_LEVEL_INFO;
 
-#if (RASPI)==1
-#define PERIPH_VIRT_BASE 0x20000000
-#define PERIPH_PHYS_BASE 0x7e000000
-#define DRAM_PHYS_BASE 0x40000000
-#define MEM_FLAG 0x0c
-#define PLLFREQ 500000000.
-#elif (RASPI)==2
-#define PERIPH_VIRT_BASE 0x3f000000
-#define PERIPH_PHYS_BASE 0x7e000000
-#define DRAM_PHYS_BASE 0xc0000000
-#define MEM_FLAG 0x04
-#define PLLFREQ 500000000.
-#elif (RASPI)==4
-#define PERIPH_VIRT_BASE 0xfe000000
-#define PERIPH_PHYS_BASE 0x7e000000
-#define DRAM_PHYS_BASE 0xc0000000
-#define MEM_FLAG 0x04
-#define PLLFREQ 750000000.
-#else
-#error Unknown Raspberry Pi version (variable RASPI)
-#endif
+/* Samples the DSP generates per fm_mpx call. Sized so DATA_SIZE is
+ * substantially less than both the DMA ring and the SPSC ring, so the
+ * producer can usually push a full batch without blocking. */
+#define DATA_SIZE 5000
 
-#define NUM_SAMPLES        50000
-#define NUM_CBS            (NUM_SAMPLES * 2)
+/* Deviation: 25.0 for WBFM (broadcast), ~3.5 for NBFM. */
+#define DEVIATION 25.0f
 
-/* DMA control register (CS) flags. See BCM2835 ARM Peripherals
- * section 4.2.1 ("DMA Control and Status register"). */
-#define BCM2708_DMA_NO_WIDE_BURSTS    (1<<26)
-#define BCM2708_DMA_WAIT_RESP         (1<<3)
-#define BCM2708_DMA_D_DREQ            (1<<6)
-#define BCM2708_DMA_PER_MAP(x)        ((x)<<16)
-#define BCM2708_DMA_END               (1<<1)
-#define BCM2708_DMA_RESET             (1<<31)
-#define BCM2708_DMA_INT               (1<<2)
+/* DMA ring size (in samples). */
+#define DEFAULT_NUM_SAMPLES 50000
 
-/* Additional DMA CS bits used to start the engine (decomposes the
- * previously bare 0x10880001 literal). */
-#define BCM2708_DMA_PRIORITY(x)       ((x)<<16)   /* AXI priority (0-15) */
-#define BCM2708_DMA_PANIC_PRIORITY(x) ((x)<<20)   /* AXI panic priority */
-#define BCM2708_DMA_WAIT_FOR_OUTSTANDING_WRITES  (1<<28)
-#define BCM2708_DMA_ACTIVE            (1<<0)
+/* SPSC ring capacity. Must be a power of two. 2^17 = 131072 floats
+ * = 512 KB, ~575 ms of slack at 228 kHz. Generous, at the cost of
+ * half a megabyte of heap; this is what keeps the DMA fed across
+ * audio-I/O stalls. */
+#define RING_CAPACITY_LOG2 17
+#define RING_CAPACITY      (1u << RING_CAPACITY_LOG2)
 
-/* DMA CS "start" word: priority 8, panic priority 8,
- * wait-for-outstanding-writes, start the engine.  Previously just
- * the bare literal 0x10880001. */
-#define DMA_CS_GO                                                    \
-    (BCM2708_DMA_WAIT_FOR_OUTSTANDING_WRITES |                       \
-     BCM2708_DMA_PANIC_PRIORITY(8) |                                 \
-     BCM2708_DMA_PRIORITY(8) |                                       \
-     BCM2708_DMA_ACTIVE)
-
-#define DMA_CS            (0x00/4)
-#define DMA_CONBLK_AD        (0x04/4)
-#define DMA_DEBUG        (0x20/4)
-
-#define DMA_BASE_OFFSET        0x00007000
-#define DMA_LEN            0x24
-#define PWM_BASE_OFFSET        0x0020C000
-#define PWM_LEN            0x28
-#define CLK_BASE_OFFSET            0x00101000
-#define CLK_LEN            0xA8
-#define GPIO_BASE_OFFSET    0x00200000
-#define GPIO_LEN        0x100
-
-#define DMA_VIRT_BASE        (PERIPH_VIRT_BASE + DMA_BASE_OFFSET)
-#define PWM_VIRT_BASE        (PERIPH_VIRT_BASE + PWM_BASE_OFFSET)
-#define CLK_VIRT_BASE        (PERIPH_VIRT_BASE + CLK_BASE_OFFSET)
-#define GPIO_VIRT_BASE        (PERIPH_VIRT_BASE + GPIO_BASE_OFFSET)
-#define PCM_VIRT_BASE        (PERIPH_VIRT_BASE + PCM_BASE_OFFSET)
-
-#define PWM_PHYS_BASE        (PERIPH_PHYS_BASE + PWM_BASE_OFFSET)
-#define PCM_PHYS_BASE        (PERIPH_PHYS_BASE + PCM_BASE_OFFSET)
-#define GPIO_PHYS_BASE        (PERIPH_PHYS_BASE + GPIO_BASE_OFFSET)
-
-
-#define PWM_CTL            (0x00/4)
-#define PWM_DMAC        (0x08/4)
-#define PWM_RNG1        (0x10/4)
-#define PWM_FIFO        (0x18/4)
-
-#define PWMCLK_CNTL        40
-#define PWMCLK_DIV        41
-
-#define CM_GP0DIV (0x7e101074)
-
-#define GPCLK_CNTL        (0x70/4)
-#define GPCLK_DIV        (0x74/4)
-
-#define PWMCTL_MODE1        (1<<1)
-#define PWMCTL_PWEN1        (1<<0)
-#define PWMCTL_CLRF        (1<<6)
-#define PWMCTL_USEF1        (1<<5)
-
-#define PWMDMAC_ENAB        (1<<31)
-// I think this means it requests as soon as there is one free slot in the FIFO
-// which is what we want as burst DMA would mess up our timing.
-#define PWMDMAC_THRSHLD        ((15<<8)|(15<<0))
-
-#define GPFSEL0            (0x00/4)
-
-// The deviation specifies how wide the signal is. Use 25.0 for WBFM
-// (broadcast radio) and about 3.5 for NBFM (walkie-talkie style radio)
-#define DEVIATION        25.0
-
-
-typedef struct {
-    uint32_t info, src, dst, length,
-         stride, next, pad[2];
-} dma_cb_t;
-
-#define BUS_TO_PHYS(x) ((x)&~0xC0000000)
-
-
-static struct {
-    int handle;            /* From mbox_open() */
-    unsigned mem_ref;    /* From mbox_mem_alloc() */
-    unsigned bus_addr;    /* From mbox_mem_lock() */
-    uint8_t *virt_addr;    /* From mapmem() */
-} mbox;
-
-/* Set by the signal handler; polled by the main loop. Using
- * sig_atomic_t so reads/writes are guaranteed to be atomic with
- * respect to signal delivery. */
+/* --- signal handler / globals ------------------------------------------- */
 static volatile sig_atomic_t g_terminate_requested = 0;
-static volatile sig_atomic_t g_terminate_signal = 0;
+static volatile sig_atomic_t g_terminate_signal    = 0;
 
+static hw_rpi_t    *g_hw  = NULL;
+static fm_mpx_ctx_t *g_mpx = NULL;
 
+/* --dry-run: exercise the entire DSP + threading pipeline without
+ * touching the Pi's DMA/PWM/GPCLK hardware. Useful for CI on non-Pi
+ * hosts and for quick smoke tests before a real broadcast. */
+static int g_dry_run = 0;
+/* --seconds N: auto-exit after N wall-clock seconds. 0 means "run
+ * forever" (the historical default). */
+static int g_max_seconds = 0;
 
-static volatile uint32_t *pwm_reg;
-static volatile uint32_t *clk_reg;
-static volatile uint32_t *dma_reg;
-static volatile uint32_t *gpio_reg;
-
-struct control_data_s {
-    dma_cb_t cb[NUM_CBS];
-    uint32_t sample[NUM_SAMPLES];
-};
-
-#define PAGE_SIZE    4096
-#define PAGE_SHIFT    12
-#define NUM_PAGES    ((sizeof(struct control_data_s) + PAGE_SIZE - 1) >> PAGE_SHIFT)
-
-static struct control_data_s *ctl;
-
-static void
-udelay(int us)
-{
-    struct timespec ts = { 0, us * 1000 };
-
-    nanosleep(&ts, NULL);
-}
-
-/* Async-signal-safe: must not call printf/malloc/etc.
- * All we do is record that a signal arrived; the real cleanup runs
- * from the main loop in do_cleanup_and_exit(). For the truly fatal
- * signals (SIGSEGV/BUS/FPE/ILL/ABRT) we do still perform cleanup
- * here, accepting the async-signal-unsafety risk because the
- * alternative is leaving the DMA engine + carrier running after the
- * process is killed. SA_RESETHAND is used so a repeat of the same
- * fatal signal will reach the default handler and core-dump. */
-static void
-terminate_signal_handler(int signum)
-{
-    g_terminate_signal = signum;
+static void terminate_signal_handler(int signum) {
+    g_terminate_signal    = signum;
     g_terminate_requested = 1;
 }
 
-static void do_cleanup_and_exit(int code) __attribute__((noreturn));
-
-static void
-do_cleanup_and_exit(int code)
-{
-    // Stop outputting and generating the clock.
-    if (clk_reg && gpio_reg && mbox.virt_addr) {
-        // Set GPIO4 to be an output (instead of ALT FUNC 0, which is the clock).
-        gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 12)) | (1 << 12);
-
-        // Disable the clock generator (write password only, all enable bits zero).
-        clk_reg[GPCLK_CNTL] = CM_PASSWD >> 24;
-    }
-
-    if (dma_reg && mbox.virt_addr) {
-        dma_reg[DMA_CS] = BCM2708_DMA_RESET;
-        udelay(10);
-    }
-
-    fm_mpx_close();
-    control_pipe_close();
-
-    if (mbox.virt_addr != NULL) {
-        unmapmem(mbox.virt_addr, NUM_PAGES * 4096);
-        mbox_mem_unlock(mbox.handle, mbox.mem_ref);
-        mbox_mem_free(mbox.handle, mbox.mem_ref);
-        mbox.virt_addr = NULL;
-    }
-
-    printf("Terminating: cleanly deactivated the DMA engine and killed the carrier.\n");
-
-    exit(code);
-}
-
-/* Retained name for the remaining call sites that still want the
- * combined "clean up + exit" semantics (main() on success, fatal()
- * on startup errors). */
-static void terminate(int num) __attribute__((noreturn));
-
-static void
-terminate(int num)
-{
-    do_cleanup_and_exit(num);
-}
-
-/* Install handlers only on the signals we actually care about. The
- * old code called sigaction() for every integer in 0..63, which
- * installed a handler on SIGPIPE, SIGCHLD, SIGWINCH, etc. -- any of
- * which would kill the transmitter. */
-static void
-install_signal_handlers(void)
-{
-    /* "Graceful shutdown" signals: run cleanup from the main loop. */
-    static const int graceful_signals[] = {
-        SIGINT, SIGTERM, SIGHUP, SIGQUIT,
-    };
-    /* "We just crashed" signals: cleanup from the handler itself
-     * and reset to the default disposition so a second identical
-     * signal will core-dump. */
-    static const int fatal_signals[] = {
-        SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT,
-    };
+static void install_signal_handlers(void) {
+    static const int graceful_signals[] = { SIGINT, SIGTERM, SIGHUP, SIGQUIT };
+    static const int fatal_signals[]    = { SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT };
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = terminate_signal_handler;
     sigemptyset(&sa.sa_mask);
-
-    for (size_t i = 0; i < sizeof(graceful_signals)/sizeof(graceful_signals[0]); i++) {
+    for (size_t i = 0; i < sizeof(graceful_signals)/sizeof(graceful_signals[0]); i++)
         sigaction(graceful_signals[i], &sa, NULL);
-    }
-
     sa.sa_flags = SA_RESETHAND;
-    for (size_t i = 0; i < sizeof(fatal_signals)/sizeof(fatal_signals[0]); i++) {
+    for (size_t i = 0; i < sizeof(fatal_signals)/sizeof(fatal_signals[0]); i++)
         sigaction(fatal_signals[i], &sa, NULL);
-    }
 }
 
-/* Marked noreturn so the compiler knows the switch cases in main()
- * that end in fatal() never fall through into the next case label.
- * The format attribute is intentionally omitted because some callers
- * use the glibc extension "%m" which triggers spurious warnings on
- * strict toolchains. */
+/* --- DSP + feeder thread plumbing --------------------------------------- */
+
+struct pifm_app {
+    hw_rpi_t       *hw;
+    fm_mpx_ctx_t   *mpx;
+    ring_spsc_t     ring;
+    float          *ring_storage;
+
+    /* Wakeup semaphores. DSP posts `feeder_wake` after pushing; feeder
+     * posts `dsp_wake` after draining. Both use sem_timedwait so no
+     * post is ever "lost" -- a missed post just means the receiver
+     * sleeps the timeout and re-polls. */
+    sem_t           dsp_wake;
+    sem_t           feeder_wake;
+
+    pthread_t       dsp_tid;
+    pthread_t       feeder_tid;
+    int             dsp_spawned;
+    int             feeder_spawned;
+};
+
+static struct pifm_app g_app;
+
+static void timespec_add_ms(struct timespec *ts, long ms) {
+    ts->tv_nsec += ms * 1000000L;
+    while (ts->tv_nsec >= 1000000000L) { ts->tv_sec++; ts->tv_nsec -= 1000000000L; }
+}
+
+/* DSP producer thread. Generates MPX samples and pushes them into the
+ * SPSC ring. When the ring is full, sleeps on dsp_wake so we don't
+ * spin. Terminates when g_terminate_requested is raised. */
+static void *dsp_thread_main(void *arg) {
+    struct pifm_app *app = arg;
+    float batch[DATA_SIZE];
+    while (!g_terminate_requested) {
+        if (fm_mpx_ctx_get_samples(app->mpx, batch) != PIFM_OK) {
+            LOG_ERR("DSP thread: fm_mpx_ctx_get_samples failed; exiting");
+            g_terminate_requested = 1;
+            break;
+        }
+
+        size_t written = 0;
+        while (written < DATA_SIZE && !g_terminate_requested) {
+            size_t n = ring_spsc_push(&app->ring, batch + written, DATA_SIZE - written);
+            written += n;
+            if (n > 0) sem_post(&app->feeder_wake);
+            if (written < DATA_SIZE) {
+                /* Ring full: wait for the feeder to drain. 50 ms is
+                 * far longer than any realistic drain interval; this
+                 * is a safety net, not the normal wake path. */
+                struct timespec ts;
+                clock_gettime(CLOCK_REALTIME, &ts);
+                timespec_add_ms(&ts, 50);
+                sem_timedwait(&app->dsp_wake, &ts);
+            }
+        }
+    }
+    return NULL;
+}
+
+/* DMA feeder thread. Pops MPX samples out of the SPSC ring, converts
+ * them to integer frequency deltas, and hands them to hw_rpi. Uses
+ * hw_rpi_wait_space (deadline-based via clock_nanosleep) for pacing. */
+static void *feeder_thread_main(void *arg) {
+    struct pifm_app *app = arg;
+    float  scratch[DATA_SIZE];
+    int    deltas[DATA_SIZE];
+    const float scale = DEVIATION / MPX_SCALE_DIV;
+
+    while (!g_terminate_requested) {
+        int free_slots;
+        if (app->hw != NULL) {
+            /* Pace by the DMA. Returns as soon as at least one slot is
+             * free; typically returns with many slots. */
+            hw_rpi_wait_space(app->hw, 1);
+            free_slots = hw_rpi_free_slots(app->hw);
+            if (free_slots < 0) continue;
+        } else {
+            /* --dry-run: consume at 228 kHz via clock_nanosleep so the
+             * DSP producer can't race ahead indefinitely. Pull a large
+             * batch so the pacing overhead stays tiny. */
+            struct timespec ts = { 0, (long)DATA_SIZE * 1000000000L / 228000L };
+            nanosleep(&ts, NULL);
+            free_slots = DATA_SIZE;
+        }
+        if (free_slots > DATA_SIZE) free_slots = DATA_SIZE;
+
+        size_t got = ring_spsc_pop(&app->ring, scratch, (size_t)free_slots);
+        if (got == 0) {
+            /* DSP producer has stalled. Sleep briefly and re-check so
+             * we don't burn CPU. 10 ms is short enough to keep the
+             * ~220 ms DMA backlog from underflowing. */
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            timespec_add_ms(&ts, 10);
+            sem_timedwait(&app->feeder_wake, &ts);
+            continue;
+        }
+
+        for (size_t i = 0; i < got; i++) {
+            deltas[i] = lrintf(scratch[i] * scale);
+        }
+        if (app->hw != NULL) {
+            hw_rpi_push_deltas(app->hw, deltas, got);
+        }
+        /* In --dry-run mode we deliberately DO still compute the deltas
+         * (keeps the producer/consumer balance realistic and exercises
+         * the whole lrintf path) but just discard the result. */
+
+        /* Wake the DSP thread in case it blocked on a full ring. */
+        sem_post(&app->dsp_wake);
+    }
+    return NULL;
+}
+
+/* Try to promote a pthread to SCHED_FIFO. Returns 1 on success, 0 if
+ * we lacked the capability (common in desktop dev). */
+static int try_sched_fifo(pthread_t tid, int priority) {
+    struct sched_param sp = { .sched_priority = priority };
+    if (pthread_setschedparam(tid, SCHED_FIFO, &sp) == 0) return 1;
+    LOG_WARN("Could not set SCHED_FIFO priority %d (%s); running SCHED_OTHER.",
+             priority, strerror(errno));
+    return 0;
+}
+
+/* --- shutdown watchdog -------------------------------------------------- */
+
+/* Global "cleanup in progress" deadline. If the main thread doesn't
+ * manage to tear everything down within WATCHDOG_MS, this handler
+ * forces a DMA reset and calls _exit. */
+#define WATCHDOG_MS 5000
+
+static void watchdog_signal_handler(int signum) {
+    (void)signum;
+    /* Async-signal-safe: single MMIO write + _exit. */
+    if (g_hw) hw_rpi_reset_dma(g_hw);
+    const char *msg = "pi_fm_rds: shutdown watchdog fired; forcing DMA reset.\n";
+    write(STDERR_FILENO, msg, strlen(msg));
+    _exit(EXIT_FAILURE);
+}
+
+static void arm_shutdown_watchdog(void) {
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = watchdog_signal_handler;
+    sigaction(SIGALRM, &sa, NULL);
+
+    struct itimerval it;
+    memset(&it, 0, sizeof(it));
+    it.it_value.tv_sec  = WATCHDOG_MS / 1000;
+    it.it_value.tv_usec = (WATCHDOG_MS % 1000) * 1000;
+    setitimer(ITIMER_REAL, &it, NULL);
+}
+
+/* --- main sequencing ---------------------------------------------------- */
+
+static void do_cleanup_and_exit(int code) __attribute__((noreturn));
+static void do_cleanup_and_exit(int code) {
+    /* Arm a watchdog; if any of the joins/closes hangs for more than
+     * WATCHDOG_MS, SIGALRM will trigger a forced DMA reset + _exit. */
+    arm_shutdown_watchdog();
+
+    g_terminate_requested = 1;
+
+    /* Wake both threads so they see the flag promptly. */
+    sem_post(&g_app.dsp_wake);
+    sem_post(&g_app.feeder_wake);
+
+    if (g_app.dsp_spawned)    pthread_join(g_app.dsp_tid,    NULL);
+    if (g_app.feeder_spawned) pthread_join(g_app.feeder_tid, NULL);
+
+    if (g_hw) hw_rpi_stop(g_hw);
+    fm_mpx_ctx_close(&g_mpx);
+    control_pipe_close();
+    if (g_hw) hw_rpi_destroy(&g_hw);
+
+    sem_destroy(&g_app.dsp_wake);
+    sem_destroy(&g_app.feeder_wake);
+    free(g_app.ring_storage);
+    g_app.ring_storage = NULL;
+
+    /* Disarm the watchdog now that cleanup completed. */
+    struct itimerval off;
+    memset(&off, 0, sizeof(off));
+    setitimer(ITIMER_REAL, &off, NULL);
+
+    printf("Terminating: cleanly deactivated the DMA engine and killed the carrier.\n");
+    exit(code);
+}
+
 static void fatal(const char *fmt, ...) __attribute__((noreturn));
-
-static void
-fatal(const char *fmt, ...)
-{
+static void fatal(const char *fmt, ...) {
     va_list ap;
-
     va_start(ap, fmt);
     vfprintf(stderr, fmt, ap);
     va_end(ap);
-    terminate(EXIT_FAILURE);
+    do_cleanup_and_exit(EXIT_FAILURE);
 }
 
-static size_t
-mem_virt_to_phys(void *virt)
-{
-    size_t offset = (size_t)virt - (size_t)mbox.virt_addr;
-
-    return mbox.bus_addr + offset;
-}
-
-static size_t
-mem_phys_to_virt(size_t phys)
-{
-    return (size_t) (phys - mbox.bus_addr + mbox.virt_addr);
-}
-
-static void *
-map_peripheral(uint32_t base, uint32_t len)
-{
-    int fd = open("/dev/mem", O_RDWR | O_SYNC);
-    void * vaddr;
-
-    if (fd < 0)
-        fatal("Failed to open /dev/mem: %m.\n");
-    vaddr = mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_SHARED, fd, base);
-    if (vaddr == MAP_FAILED)
-        fatal("Failed to map peripheral at 0x%08x: %m.\n", base);
-    close(fd);
-
-    return vaddr;
-}
-
-
-
-#define SUBSIZE 1
-#define DATA_SIZE 5000
-
-
-pifm_status_t tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi,
-                 const char *ps, const char *rt, float ppm,
-                 const char *control_pipe) {
-    // Install handlers on the signals we actually want to intercept
-    // (see install_signal_handlers for the list). Crucially, we no
-    // longer hook SIGPIPE / SIGCHLD / real-time signals.
+static pifm_status_t tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi,
+                        const char *ps, const char *rt, float ppm,
+                        const char *control_pipe) {
     install_signal_handlers();
 
-    dma_reg = map_peripheral(DMA_VIRT_BASE, DMA_LEN);
-    pwm_reg = map_peripheral(PWM_VIRT_BASE, PWM_LEN);
-    clk_reg = map_peripheral(CLK_VIRT_BASE, CLK_LEN);
-    gpio_reg = map_peripheral(GPIO_VIRT_BASE, GPIO_LEN);
-
-    // Use the mailbox interface to the VC to ask for physical memory.
-    mbox.handle = mbox_open();
-    if (mbox.handle < 0)
-        fatal("Failed to open mailbox. Check kernel support for vcio / BCM2708 mailbox.\n");
-    printf("Allocating physical memory: size = %zu     ", NUM_PAGES * 4096);
-    if(! (mbox.mem_ref = mbox_mem_alloc(mbox.handle, NUM_PAGES * 4096, 4096, MEM_FLAG))) {
-        fatal("Could not allocate memory.\n");
+    /* Lock memory pages so the feeder thread isn't paged out mid-DMA. */
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) != 0) {
+        LOG_WARN("mlockall() failed (%s); proceeding without locked pages.",
+                 strerror(errno));
     }
-    // TODO: How do we know that succeeded?
-    printf("mem_ref = %u     ", mbox.mem_ref);
-    if(! (mbox.bus_addr = mbox_mem_lock(mbox.handle, mbox.mem_ref))) {
-        fatal("Could not lock memory.\n");
+
+    /* ---- Hardware init (skipped in --dry-run) ----------------------- */
+    pifm_status_t st;
+    if (!g_dry_run) {
+        hw_rpi_cfg_t cfg = {
+            .carrier_freq_hz = carrier_freq,
+            .ppm             = ppm,
+            .num_samples     = DEFAULT_NUM_SAMPLES,
+        };
+        st = hw_rpi_init(&g_hw, &cfg);
+        if (st != PIFM_OK) fatal("hw_rpi_init failed (%d)\n", (int)st);
+        st = hw_rpi_start(g_hw);
+        if (st != PIFM_OK) fatal("hw_rpi_start failed (%d)\n", (int)st);
+        g_app.hw = g_hw;
+    } else {
+        LOG_INFO("Dry run: skipping Raspberry Pi hardware initialisation.");
+        g_app.hw = NULL;
     }
-    printf("bus_addr = %x     ", mbox.bus_addr);
-    if(! (mbox.virt_addr = mapmem(BUS_TO_PHYS(mbox.bus_addr), NUM_PAGES * 4096))) {
-        fatal("Could not map memory.\n");
-    }
-    printf("virt_addr = %p\n", mbox.virt_addr);
+    (void)carrier_freq; (void)ppm;
 
+    /* ---- RDS --------------------------------------------------------- */
+    rds_ctx_t *rds = rds_default_ctx();
+    rds_ctx_set_pi(rds, pi);
+    rds_ctx_set_rt(rds, rt);
 
-    // GPIO4 needs to be ALT FUNC 0 to output the clock
-    gpio_reg[GPFSEL0] = (gpio_reg[GPFSEL0] & ~(7 << 12)) | (4 << 12);
-
-    // Program GPCLK to use MASH setting 1, so fractional dividers work
-    clk_reg[GPCLK_CNTL] = CM_PASSWD | 6;
-    udelay(100);
-    clk_reg[GPCLK_CNTL] = CM_PASSWD | 1 << 9 | 1 << 4 | 6;
-
-    ctl = (struct control_data_s *) mbox.virt_addr;
-    dma_cb_t *cbp = ctl->cb;
-    uint32_t phys_sample_dst = CM_GP0DIV;
-    uint32_t phys_pwm_fifo_addr = PWM_PHYS_BASE + 0x18;
-
-
-    // Calculate the frequency control word for CM_GP0DIV: the upper
-    // 20 bits are the integer divider and the lower 12 bits are the
-    // fractional divider (MASH). The previous form,
-    //
-    //     ((float)(PLLFREQ / carrier_freq)) * ( 1 << 12 )
-    //
-    // computed PLLFREQ/carrier_freq in double, narrowed to float,
-    // then scaled -- silently dropping ~6 bits of precision of the
-    // fractional part via the intermediate float. Compute the two
-    // halves explicitly in double (the same pattern used for the
-    // PWM divider below) so the full precision is preserved. The
-    // truncation semantics of the old code are kept on purpose so
-    // this fix does not nudge the transmit frequency.
-    double pll_ratio  = PLLFREQ / (double)carrier_freq;
-    uint32_t idiv     = (uint32_t)pll_ratio;
-    uint32_t fdiv     = (uint32_t)((pll_ratio - idiv) * 4096.0);
-    uint32_t freq_ctl = (idiv << 12) | (fdiv & 0xFFF);
-
-
-    for (int i = 0; i < NUM_SAMPLES; i++) {
-        ctl->sample[i] = CM_PASSWD | freq_ctl;    // Silence
-        // Write a frequency sample
-        cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP;
-        cbp->src = mem_virt_to_phys(ctl->sample + i);
-        cbp->dst = phys_sample_dst;
-        cbp->length = 4;
-        cbp->stride = 0;
-        cbp->next = mem_virt_to_phys(cbp + 1);
-        cbp++;
-        // Delay
-        cbp->info = BCM2708_DMA_NO_WIDE_BURSTS | BCM2708_DMA_WAIT_RESP | BCM2708_DMA_D_DREQ | BCM2708_DMA_PER_MAP(5);
-        cbp->src = mem_virt_to_phys(mbox.virt_addr);
-        cbp->dst = phys_pwm_fifo_addr;
-        cbp->length = 4;
-        cbp->stride = 0;
-        cbp->next = mem_virt_to_phys(cbp + 1);
-        cbp++;
-    }
-    cbp--;
-    cbp->next = mem_virt_to_phys(mbox.virt_addr);
-
-    // Here we define the rate at which we want to update the GPCLK control
-    // register.
-    //
-    // Set the range to 2 bits. PLLD is at 500 MHz, therefore to get 228 kHz
-    // we need a divisor of 500000000 / 2000 / 228 = 1096.491228
-    //
-    // This is 1096 + 2012*2^-12 theoretically
-    //
-    // However the fractional part may have to be adjusted to take the actual
-    // frequency of your Pi's oscillator into account. For example on my Pi,
-    // the fractional part should be 1916 instead of 2012 to get exactly
-    // 228 kHz. However RDS decoding is still okay even at 2012.
-    //
-    // So we use the 'ppm' parameter to compensate for the oscillator error
-
-    float divider = (PLLFREQ/(2000*228*(1.+ppm/1.e6)));
-    uint32_t idivider = (uint32_t) divider;
-    uint32_t fdivider = (uint32_t) ((divider - idivider)*pow(2, 12));
-
-    printf("ppm corr is %.4f, divider is %.4f (%d + %d*2^-12) [nominal 1096.4912].\n",
-                ppm, divider, idivider, fdivider);
-
-    pwm_reg[PWM_CTL] = 0;
-    udelay(10);
-    clk_reg[PWMCLK_CNTL] = CM_PASSWD | 0x06;        // Source=PLLD and disable
-    udelay(100);
-    // theorically : 1096 + 2012*2^-12
-    clk_reg[PWMCLK_DIV] = CM_PASSWD | (idivider<<12) | fdivider;
-    udelay(100);
-    clk_reg[PWMCLK_CNTL] = CM_PASSWD | 0x0216;      // Source=PLLD and enable + MASH filter 1
-    udelay(100);
-    pwm_reg[PWM_RNG1] = 2;
-    udelay(10);
-    pwm_reg[PWM_DMAC] = PWMDMAC_ENAB | PWMDMAC_THRSHLD;
-    udelay(10);
-    pwm_reg[PWM_CTL] = PWMCTL_CLRF;
-    udelay(10);
-    pwm_reg[PWM_CTL] = PWMCTL_USEF1 | PWMCTL_PWEN1;
-    udelay(10);
-
-
-    // Initialise the DMA
-    dma_reg[DMA_CS] = BCM2708_DMA_RESET;
-    udelay(10);
-    dma_reg[DMA_CS] = BCM2708_DMA_INT | BCM2708_DMA_END;
-    dma_reg[DMA_CONBLK_AD] = mem_virt_to_phys(ctl->cb);
-    dma_reg[DMA_DEBUG] = 7; // clear debug error flags
-    dma_reg[DMA_CS] = DMA_CS_GO;    // go, priority 8/panic 8, wait for outstanding writes
-
-
-    size_t last_cb_virt_addr = (size_t)ctl->cb;
-
-    // Data structures for baseband data
-    float data[DATA_SIZE];
-    int data_len = 0;
-    int data_index = 0;
-
-    // Initialize the baseband generator
-    if(fm_mpx_open(audio_file, DATA_SIZE) != PIFM_OK) return PIFM_ERR_IO;
-
-    // Initialize the RDS modulator
-    char generated_ps[PS_BUF_SIZE] = {0};
-    rds_set_pi(pi);
-    rds_set_rt(rt);
-    uint16_t ps_cycle_counter = 0;
+    char     generated_ps[PS_BUF_SIZE] = {0};
+    uint16_t ps_cycle_counter   = 0;
     uint16_t ps_numeric_counter = 0;
-    int varying_ps = 0;
+    int      varying_ps         = 0;
 
-    if(ps) {
-        rds_set_ps(ps);
+    if (ps) {
+        rds_ctx_set_ps(rds, ps);
         printf("PI: %04X, PS: \"%s\".\n", pi, ps);
     } else {
         printf("PI: %04X, PS: <Varying>.\n", pi);
@@ -584,24 +363,58 @@ pifm_status_t tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi,
     }
     printf("RT: \"%s\"\n", rt);
 
-    // Initialize the control pipe reader
-    if(control_pipe) {
+    /* ---- MPX --------------------------------------------------------- */
+    st = fm_mpx_ctx_open(&g_mpx, audio_file, DATA_SIZE, rds);
+    if (st != PIFM_OK) return PIFM_ERR_IO;
+    g_app.mpx = g_mpx;
+
+    /* ---- SPSC ring + semaphores ------------------------------------- */
+    g_app.ring_storage = malloc((size_t)RING_CAPACITY * sizeof(float));
+    if (g_app.ring_storage == NULL) fatal("Out of memory allocating SPSC ring.\n");
+    if (ring_spsc_init(&g_app.ring, g_app.ring_storage, RING_CAPACITY) != 0)
+        fatal("ring_spsc_init failed.\n");
+    if (sem_init(&g_app.dsp_wake, 0, 0) != 0
+     || sem_init(&g_app.feeder_wake, 0, 0) != 0)
+        fatal("sem_init failed: %s\n", strerror(errno));
+
+    /* ---- Control pipe ----------------------------------------------- */
+    if (control_pipe) {
         LOG_INFO("Waiting for control pipe `%s` to be opened by the writer, e.g. "
                  "by running `cat >%s`.", control_pipe, control_pipe);
-        if(control_pipe_open(control_pipe) == PIFM_OK) {
+        if (control_pipe_open(control_pipe) == PIFM_OK) {
             LOG_INFO("Reading control commands on %s.", control_pipe);
         } else {
-            /* §6.10: previously logged to stdout; downgrading it to
-             * LOG_ERR routes it through stderr where error-handling
-             * shell scripts expect it. */
             LOG_ERR("Failed to open control pipe: %s.", control_pipe);
             control_pipe = NULL;
         }
     }
 
+    if (g_dry_run) {
+        printf("Dry run: DSP pipeline running, no RF output. Carrier would be %3.1f MHz.\n",
+               carrier_freq/1e6);
+    } else {
+        printf("Starting to transmit on %3.1f MHz.\n", carrier_freq/1e6);
+    }
 
-    printf("Starting to transmit on %3.1f MHz.\n", carrier_freq/1e6);
+    /* Arm the --seconds auto-exit timer. We reuse the same SIGALRM
+     * that the shutdown watchdog will install later, but at this
+     * point there's no watchdog yet, so SIGALRM here routes to the
+     * normal terminate handler. */
+    time_t deadline = (g_max_seconds > 0) ? time(NULL) + g_max_seconds : 0;
 
+    /* ---- Spawn worker threads --------------------------------------- */
+    if (pthread_create(&g_app.dsp_tid, NULL, dsp_thread_main, &g_app) != 0)
+        fatal("pthread_create(dsp) failed: %s\n", strerror(errno));
+    g_app.dsp_spawned = 1;
+
+    if (pthread_create(&g_app.feeder_tid, NULL, feeder_thread_main, &g_app) != 0)
+        fatal("pthread_create(feeder) failed: %s\n", strerror(errno));
+    g_app.feeder_spawned = 1;
+    /* Only the feeder gets SCHED_FIFO -- the DSP thread may block in
+     * libsndfile, which we don't want to do under RT priority. */
+    try_sched_fifo(g_app.feeder_tid, 2);
+
+    /* ---- Main thread: control plane --------------------------------- */
     for (;;) {
         if (g_terminate_requested) {
             int sig = g_terminate_signal;
@@ -609,84 +422,37 @@ pifm_status_t tx(uint32_t carrier_freq, const char *audio_file, uint16_t pi,
             do_cleanup_and_exit(EXIT_SUCCESS);
         }
 
-        // Default (varying) PS
-        if(varying_ps) {
-            if(ps_cycle_counter == 512) {
+        if (deadline != 0 && time(NULL) >= deadline) {
+            printf("--seconds %d elapsed; shutting down.\n", g_max_seconds);
+            do_cleanup_and_exit(EXIT_SUCCESS);
+        }
+
+        if (varying_ps) {
+            if (ps_cycle_counter == 512) {
                 snprintf(generated_ps, PS_BUF_SIZE, "%08d", ps_numeric_counter);
-                rds_set_ps(generated_ps);
+                rds_ctx_set_ps(rds, generated_ps);
                 ps_numeric_counter++;
             }
-            if(ps_cycle_counter == 1024) {
-                rds_set_ps("RPi-Live");
+            if (ps_cycle_counter == 1024) {
+                rds_ctx_set_ps(rds, "RPi-Live");
                 ps_cycle_counter = 0;
             }
             ps_cycle_counter++;
         }
 
-        if(control_pipe && control_pipe_poll() == CONTROL_PIPE_PS_SET) {
+        if (control_pipe && control_pipe_poll() == CONTROL_PIPE_PS_SET) {
             varying_ps = 0;
         }
 
-        usleep(5000);
-
-        /* §1.4: DMA_CONBLK_AD is volatile DMA-engine state. Between
-         * "DMA reset" and "first CB loaded" it can briefly read 0, or
-         * latch a partially-updated value that is not within our
-         * control-block region; mem_phys_to_virt() would then yield a
-         * nonsense pointer and the divisions below would produce
-         * garbage sample indices. Read twice, require the two reads
-         * to agree *and* fall inside the control-block region, and
-         * skip this iteration if we can't get a stable in-range
-         * reading. */
-        uint32_t phys_cb_1 = dma_reg[DMA_CONBLK_AD];
-        uint32_t phys_cb_2 = dma_reg[DMA_CONBLK_AD];
-        if (phys_cb_1 == 0 || phys_cb_1 != phys_cb_2) {
-            continue;
-        }
-        size_t cur_cb = mem_phys_to_virt(phys_cb_1);
-        size_t cb_base = (size_t)ctl->cb;
-        size_t cb_end  = cb_base + NUM_CBS * sizeof(dma_cb_t);
-        if (cur_cb < cb_base || cur_cb >= cb_end) {
-            continue;
-        }
-
-        int last_sample = (last_cb_virt_addr - (size_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
-        int this_sample = (cur_cb - (size_t)mbox.virt_addr) / (sizeof(dma_cb_t) * 2);
-        int free_slots = this_sample - last_sample;
-
-        if (free_slots < 0)
-            free_slots += NUM_SAMPLES;
-
-        while (free_slots >= SUBSIZE) {
-            // get more baseband samples if necessary
-            if(data_len == 0) {
-                if( fm_mpx_get_samples(data) != PIFM_OK ) {
-                    terminate(0);
-                }
-                data_len = DATA_SIZE;
-                data_index = 0;
-            }
-
-            float dval = data[data_index] * (DEVIATION / MPX_SCALE_DIV);
-            data_index++;
-            data_len--;
-
-            int intval = lrintf(dval);
-            //int frac = (int)((dval - (float)intval) * SUBSIZE);
-
-
-            ctl->sample[last_sample++] = (CM_PASSWD | freq_ctl) + intval; //(frac > j ? intval + 1 : intval);
-            if (last_sample == NUM_SAMPLES)
-                last_sample = 0;
-
-            free_slots -= SUBSIZE;
-        }
-        last_cb_virt_addr = (size_t)(mbox.virt_addr + last_sample * sizeof(dma_cb_t) * 2);
+        /* 5 ms matches the old control-plane tick cadence; nothing
+         * audio-critical happens here so we can afford to be lazy. */
+        struct timespec ts = { 0, 5 * 1000 * 1000 };
+        nanosleep(&ts, NULL);
     }
-
-    return PIFM_OK;
+    /* unreachable */
 }
 
+/* --- CLI ---------------------------------------------------------------- */
 
 #ifndef PIFM_VERSION
 #define PIFM_VERSION "unknown"
@@ -706,6 +472,8 @@ static void print_usage(FILE *out) {
         "  --ps    TEXT      RDS Programme Service name (<= %d chars)\n"
         "  --rt    TEXT      RDS RadioText (<= %d chars)\n"
         "  --ctl   FILE      FIFO / file used to update PS/RT/TA at runtime\n"
+        "  --dry-run         run the DSP pipeline without touching Pi hardware\n"
+        "  --seconds N       auto-exit after N seconds (0 = run forever)\n"
         "  -h, --help        print this message and exit\n"
         "  -V, --version     print the program version and exit\n"
         "  -v, --verbose     increase logging verbosity (repeatable)\n"
@@ -720,8 +488,6 @@ static void print_version(FILE *out) {
     fprintf(out, "PiFmRds %s\n", PIFM_VERSION);
 }
 
-/* Parse a carrier frequency given in MHz as a string. Returns the
- * frequency in Hz, or 0 on parse / range error. */
 static uint32_t parse_carrier_freq(const char *s) {
     char *end = NULL;
     double mhz = strtod(s, &end);
@@ -731,22 +497,16 @@ static uint32_t parse_carrier_freq(const char *s) {
 }
 
 int main(int argc, char **argv) {
-    const char *audio_file = NULL;
+    const char *audio_file   = NULL;
     const char *control_pipe = NULL;
-    uint32_t carrier_freq = 107900000;
-    const char *ps = NULL;
-    const char *rt = "PiFmRds: live FM-RDS transmission from the RaspberryPi";
-    uint16_t pi = 0x1234;
-    float ppm = 0;
+    uint32_t    carrier_freq = 107900000;
+    const char *ps           = NULL;
+    const char *rt           = "PiFmRds: live FM-RDS transmission from the RaspberryPi";
+    uint16_t    pi           = 0x1234;
+    float       ppm          = 0;
 
-    if (argc > 0 && argv[0] != NULL && argv[0][0] != '\0') {
-        g_progname = argv[0];
-    }
+    if (argc > 0 && argv[0] != NULL && argv[0][0] != '\0') g_progname = argv[0];
 
-    /* Deprecation warning: emit one-off warning per legacy single-dash
-     * long option (-freq, -ps, ...). getopt_long_only() still accepts
-     * them so behaviour is preserved; they are scheduled for removal
-     * in a future release per Phase 11 of the refactoring plan. */
     static const char * const legacy_singles[] = {
         "-freq", "-audio", "-wav", "-ppm", "-pi", "-ps", "-rt", "-ctl", NULL
     };
@@ -761,45 +521,36 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Long-option table. We use getopt_long_only so the classic
-     * single-dash spellings (-freq, -ps, ...) still work alongside
-     * the modern double-dash forms. All options take a required
-     * argument except --help / --version.
-     *
-     * `val` doubles as a synthetic "short option" identifier; using
-     * values above 127 avoids clashes with the real -h / -V shorts. */
     enum {
         OPT_FREQ = 0x100,
         OPT_AUDIO, OPT_WAV, OPT_PPM, OPT_PI, OPT_PS, OPT_RT, OPT_CTL,
+        OPT_DRY_RUN, OPT_SECONDS,
     };
     static const struct option long_opts[] = {
-        { "freq",    required_argument, NULL, OPT_FREQ   },
-        { "audio",   required_argument, NULL, OPT_AUDIO  },
-        { "wav",     required_argument, NULL, OPT_WAV    },
-        { "ppm",     required_argument, NULL, OPT_PPM    },
-        { "pi",      required_argument, NULL, OPT_PI     },
-        { "ps",      required_argument, NULL, OPT_PS     },
-        { "rt",      required_argument, NULL, OPT_RT     },
-        { "ctl",     required_argument, NULL, OPT_CTL    },
-        { "help",    no_argument,       NULL, 'h'        },
-        { "version", no_argument,       NULL, 'V'        },
-        { "verbose", no_argument,       NULL, 'v'        },
-        { "quiet",   no_argument,       NULL, 'q'        },
+        { "freq",    required_argument, NULL, OPT_FREQ    },
+        { "audio",   required_argument, NULL, OPT_AUDIO   },
+        { "wav",     required_argument, NULL, OPT_WAV     },
+        { "ppm",     required_argument, NULL, OPT_PPM     },
+        { "pi",      required_argument, NULL, OPT_PI      },
+        { "ps",      required_argument, NULL, OPT_PS      },
+        { "rt",      required_argument, NULL, OPT_RT      },
+        { "ctl",     required_argument, NULL, OPT_CTL     },
+        { "dry-run", no_argument,       NULL, OPT_DRY_RUN },
+        { "seconds", required_argument, NULL, OPT_SECONDS },
+        { "help",    no_argument,       NULL, 'h'         },
+        { "version", no_argument,       NULL, 'V'         },
+        { "verbose", no_argument,       NULL, 'v'         },
+        { "quiet",   no_argument,       NULL, 'q'         },
         { NULL, 0, NULL, 0 }
     };
 
-    /* Leading ':' enables distinguishing unknown option (?) from
-     * missing argument (:) in the switch below. */
-    int opt;
-    int opt_index = 0;
+    int opt, opt_index = 0;
     while ((opt = getopt_long_only(argc, argv, ":hVvq", long_opts, &opt_index)) != -1) {
         switch (opt) {
         case OPT_FREQ: {
             uint32_t f = parse_carrier_freq(optarg);
-            if (f == 0) {
-                fatal("Incorrect frequency specification '%s'. Must be in megahertz, "
-                      "of the form 107.9, between 76 and 108.\n", optarg);
-            }
+            if (f == 0) fatal("Incorrect frequency specification '%s'. Must be in megahertz, "
+                              "of the form 107.9, between 76 and 108.\n", optarg);
             carrier_freq = f;
             break;
         }
@@ -813,64 +564,48 @@ int main(int argc, char **argv) {
         case OPT_PI: {
             char *end = NULL;
             long v = strtol(optarg, &end, 16);
-            if (end == optarg || *end != '\0' || v < 0 || v > 0xFFFF) {
-                fatal("Incorrect PI code '%s'. Must be four hex digits (e.g. 1234).\n",
-                      optarg);
-            }
+            if (end == optarg || *end != '\0' || v < 0 || v > 0xFFFF)
+                fatal("Incorrect PI code '%s'. Must be four hex digits (e.g. 1234).\n", optarg);
             pi = (uint16_t)v;
             break;
         }
         case OPT_PS:
-            if (strlen(optarg) > PS_LENGTH) {
+            if (strlen(optarg) > PS_LENGTH)
                 fprintf(stderr, "warning: PS text '%s' is longer than %d characters; "
                         "will be truncated.\n", optarg, PS_LENGTH);
-            }
             ps = optarg;
             break;
         case OPT_RT:
-            if (strlen(optarg) > RT_LENGTH) {
+            if (strlen(optarg) > RT_LENGTH)
                 fprintf(stderr, "warning: RT text is longer than %d characters; "
                         "will be truncated.\n", RT_LENGTH);
-            }
             rt = optarg;
             break;
-        case OPT_CTL:
-            control_pipe = optarg;
+        case OPT_CTL: control_pipe = optarg; break;
+        case OPT_DRY_RUN: g_dry_run = 1; break;
+        case OPT_SECONDS: {
+            char *end = NULL;
+            long v = strtol(optarg, &end, 10);
+            if (end == optarg || *end != '\0' || v <= 0 || v > INT32_MAX)
+                fatal("Invalid --seconds value '%s'.\n", optarg);
+            g_max_seconds = (int)v;
             break;
-        case 'h':
-            print_usage(stdout);
-            return EXIT_SUCCESS;
-        case 'V':
-            print_version(stdout);
-            return EXIT_SUCCESS;
-        case 'v':
-            if (g_log_level < LOG_LEVEL_DBG) g_log_level++;
-            break;
-        case 'q':
-            if (g_log_level > LOG_LEVEL_ERR) g_log_level--;
-            break;
-        case ':':
-            fatal("Option '%s' requires an argument.\n", argv[optind - 1]);
+        }
+        case 'h':     print_usage(stdout);   return EXIT_SUCCESS;
+        case 'V':     print_version(stdout); return EXIT_SUCCESS;
+        case 'v':     if (g_log_level < LOG_LEVEL_DBG) g_log_level++; break;
+        case 'q':     if (g_log_level > LOG_LEVEL_ERR) g_log_level--; break;
+        case ':':     fatal("Option '%s' requires an argument.\n", argv[optind - 1]);
         case '?':
-        default:
-            print_usage(stderr);
-            return EXIT_FAILURE;
+        default:      print_usage(stderr); return EXIT_FAILURE;
         }
     }
 
-    if (optind < argc) {
-        fatal("Unexpected positional argument: %s\n", argv[optind]);
-    }
+    if (optind < argc) fatal("Unexpected positional argument: %s\n", argv[optind]);
 
-    /* Set locale based on the environment variables. Necessary to
-     * decode non-ASCII characters using mbtowc() in rds_strings.c. */
-    char* locale = setlocale(LC_ALL, "");
+    char *locale = setlocale(LC_ALL, "");
     printf("Locale set to %s.\n", locale);
 
     pifm_status_t status = tx(carrier_freq, audio_file, pi, ps, rt, ppm, control_pipe);
-
-    /* Map internal status onto a shell-friendly exit code: 0 on
-     * success, 1 on any error (the specific status is already logged
-     * to stderr). */
-    terminate(status == PIFM_OK ? EXIT_SUCCESS : EXIT_FAILURE);
+    do_cleanup_and_exit(status == PIFM_OK ? EXIT_SUCCESS : EXIT_FAILURE);
 }

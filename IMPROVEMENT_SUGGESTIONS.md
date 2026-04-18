@@ -8,30 +8,39 @@ history for the snapshot).
 ## Status (updated 2026-04-18)
 
 Most of §1 (bugs) and §5 (readability/consistency) have been addressed
-across phases 0–14. Fixed items are marked with "**RESOLVED**" + phase
-tag in the headings below. The two largest outstanding areas are
-performance (§2) and the higher-effort refactors in §8; see the Priority
-Summary at the end for what's still open.
+across phases 0–14. The Tier-2 architectural refactor
+(pifm-tier2-architectural-refactor, April 2026) closed the remaining
+high-impact items in §2, §6, and §8. See `ARCHITECTURE.md` for the
+threading model and library/driver split.
 
 Resolved so far:
 - **§1 bugs:** 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11,
   1.12, 1.13, 1.14, 1.15, 1.16, 1.17, 1.18, 1.19, 1.20, 1.21, 1.22, 1.23
-- **§2 performance:** 2.4 (round via `lrintf`), 2.9 (`-mtune` per model)
+- **§2 performance:** 2.1 (doubled FIR ring buffer), 2.2 (deadline
+  scheduling via `clock_nanosleep`), 2.3 (57 kHz LUT), 2.4 (round via
+  `lrintf`), 2.6 (dead SUBSIZE/frac gone), 2.8 (RDS one-pass sample
+  buffer — carrier LUT eliminates the per-sample branch; the
+  read-and-zero accumulator remains but is now the only memory write
+  per sample), 2.9 (`-mtune` per model)
 - **§3 efficiency:** 3.3 (drop `<strings.h>`/`bzero`)
 - **§4 elegance:** 4.2, 4.3, 4.5, 4.7, 4.8 (folded into 1.10 fix)
 - **§5 readability:** 5.S1, 5.S2, 5.S3, 5.S4, 5.S5, 5.S6, 5.S7, 5.S11,
   5.S12 (partial), 5.S13, 5.S14, 5.S15, 5.S17, 5.S18, 5.S21, 5.S22
-- **§6 engineering:** 6.1, 6.5, 6.7, 6.8, 6.10, 6.13, 6.14, 6.15
+- **§6 engineering:** 6.1, 6.5, 6.7, 6.8, 6.10, 6.11 (shutdown
+  watchdog + setitimer), 6.13, 6.14, 6.15
+- **§8 refactors:** 8.1 (fm_mpx_ctx_t / rds_ctx_t), 8.2 (hw_rpi / hw_stub
+  split), 8.3 (deadline-driven feeder via clock_nanosleep), 8.4
+  (logging.h already existed; now propagated), 8.6 (--version and
+  --help done, --dry-run and --seconds added for CI)
 
 Still open (not fixed):
-- **§2 performance:** 2.1, 2.2, 2.3, 2.5, 2.6, 2.7, 2.8, 2.10
+- **§2 performance:** 2.5, 2.7, 2.10
 - **§3 efficiency:** 3.1 (WAVs in `src/`), 3.2 (`NUM_SAMPLES` sizing)
-- **§4 elegance:** 4.1 (magic numbers, partial), 4.4 (`getopt_long` - done
-  via `getopt_long_only`), 4.6, 4.9 (Makefile regenerate rule)
+- **§4 elegance:** 4.1 (magic numbers, partial), 4.6, 4.9 (Makefile regen)
 - **§5 readability:** 5.S8, 5.S9, 5.S10, 5.S16, 5.S19, 5.S20
-- **§6 engineering:** 6.2, 6.3, 6.4 (done via `.editorconfig`/
-  `.clang-format`), 6.6, 6.9, 6.11, 6.12, 6.16
-- **§8 refactors:** all six still open
+- **§6 engineering:** 6.2, 6.3, 6.4 (partial via `.editorconfig` /
+  `.clang-format`), 6.6, 6.9, 6.12, 6.16
+- **§8 refactors:** 8.5 (kernel module -- explicitly deferred)
 
 ---
 

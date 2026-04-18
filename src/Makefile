@@ -57,14 +57,15 @@ else ifneq ($(strip $(RPI_VERSION)),)
 	ARCH_CFLAGS = -O3
 	TARGET = 1
 else
-	ARCH_CFLAGS = -O3
-	TARGET = other
+	# Host build (non-Pi / CI). Default to RASPI=1 so hw_rpi.c
+	# compiles cleanly; the resulting binary only works with
+	# --dry-run because /dev/mem won't have the expected layout.
+	ARCH_CFLAGS = -O2
+	TARGET = 1
 endif
 
 CFLAGS = $(STD_CFLAGS) $(ARCH_CFLAGS)
-ifneq ($(TARGET), other)
 CFLAGS += -DRASPI=$(TARGET)
-endif
 
 # Version string baked into the binary for --version (Phase 11).
 # `git describe` gives a human-readable name (tag + commit). Fallback
@@ -78,27 +79,39 @@ CFLAGS += -DPIFM_VERSION=\"$(PIFM_VERSION)\"
 # calculation in rds.c (S2.10).
 DSP_CFLAGS = -ftree-vectorize -ffast-math
 
-APP_OBJS = rds.o waveforms.o pi_fm_rds.o rds_strings.o fm_mpx.o control_pipe.o mailbox.o
-RDSWAV_OBJS = rds_wav.o rds.o rds_strings.o waveforms.o fm_mpx.o
+# Pure-DSP library (host-testable, no hardware dependencies). Bundled
+# into libpifmrds.a so the main binary, rds_wav, and the unit tests all
+# link against exactly the same compiled objects.
+LIBPIFM_OBJS = rds.o fm_mpx.o rds_strings.o waveforms.o
+# Raspberry-Pi-specific driver objects (mmap/DMA/mailbox/control pipe).
+HW_OBJS      = hw_rpi.o mailbox.o control_pipe.o
+APP_OBJS     = pi_fm_rds.o $(HW_OBJS) libpifmrds.a
+# rds_wav only uses the pure DSP library, so it has no hardware
+# dependency and builds everywhere. hw_stub.o is only needed by the
+# upcoming --dry-run path (see hw_stub.o below).
+RDSWAV_OBJS  = rds_wav.o libpifmrds.a
 
-# Default target: build rds_wav always, pi_fm_rds only on a Pi.
-ifneq ($(TARGET), other)
+# Default target: build both binaries everywhere. pi_fm_rds built on a
+# non-Pi host only works in --dry-run mode; this is a deliberate
+# feature so CI can exercise the DSP + threading pipeline.
 all: pi_fm_rds rds_wav
-else
-all: rds_wav
-endif
 
 .PHONY: all app clean distclean install uninstall asan test
 
-ifneq ($(TARGET), other)
 app: pi_fm_rds
 
 pi_fm_rds: $(APP_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $(APP_OBJS) -lsndfile -lm
-endif
+	$(CC) $(LDFLAGS) -o $@ $(APP_OBJS) -pthread -lsndfile -lm
 
 rds_wav: $(RDSWAV_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $(RDSWAV_OBJS) -lsndfile -lm
+
+# libpifmrds.a -- pure-DSP archive, no Pi hardware dependencies.
+# Consumers (pi_fm_rds, rds_wav, unit tests) all link the same
+# compiled objects, so host-side tests exercise exactly the code that
+# runs on the Pi.
+libpifmrds.a: $(LIBPIFM_OBJS)
+	$(AR) rcs $@ $(LIBPIFM_OBJS)
 
 # DSP TUs get the extra vectorizer / fast-math flags.
 fm_mpx.o: fm_mpx.c
@@ -119,6 +132,12 @@ waveforms.o: waveforms.c
 mailbox.o: mailbox.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+hw_rpi.o: hw_rpi.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+hw_stub.o: hw_stub.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
 rds_strings.o: rds_strings.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -137,7 +156,27 @@ rds_strings_test: rds_strings.o rds_strings_test.c
 	$(CC) $(WARN_CFLAGS) -std=gnu99 -g -o $@ rds_strings.o rds_strings_test.c
 	./rds_strings_test
 
-test: rds_strings_test
+# Self-contained self-test for the SPSC ring. Built from the header
+# via -DRING_SPSC_TEST.
+ring_spsc_test: ring_spsc.h
+	$(CC) $(WARN_CFLAGS) -std=gnu99 -g -DRING_SPSC_TEST -x c ring_spsc.h -o $@
+	./ring_spsc_test
+
+# Golden-vector tests link against libpifmrds.a only -- no Pi hardware
+# required, so they run fine in CI on any x86/ARM host.
+rds_crc_test: rds_crc_test.c libpifmrds.a
+	$(CC) $(WARN_CFLAGS) -std=gnu99 -g -o $@ rds_crc_test.c libpifmrds.a -lm
+	./rds_crc_test
+
+mjd_test: mjd_test.c libpifmrds.a
+	$(CC) $(WARN_CFLAGS) -std=gnu99 -g -o $@ mjd_test.c libpifmrds.a -lm
+	./mjd_test
+
+rds_group_test: rds_group_test.c libpifmrds.a
+	$(CC) $(WARN_CFLAGS) -std=gnu99 -g -o $@ rds_group_test.c libpifmrds.a -lm
+	./rds_group_test
+
+test: rds_strings_test ring_spsc_test rds_crc_test mjd_test rds_group_test
 
 # ---- ASan developer build (S6.14) ----
 
@@ -155,7 +194,7 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/pi_fm_rds
 
 clean:
-	rm -f *.o *.d pi_fm_rds rds_wav *_test
+	rm -f *.o *.d *.a pi_fm_rds rds_wav *_test
 
 distclean: clean
 	rm -f ../baseline_mpx.wav ../baseline_mpx.sha256
