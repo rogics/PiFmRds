@@ -448,6 +448,9 @@ void hw_rpi_wait_space(hw_rpi_t *hw, int min_slots) {
 
         /* Sample period is 1/228000 s ~= 4386 ns. */
         long ns = (long)need * 4386L;
+        /* Floor at 500 us so a -1 (stale DMA read) or a tiny `need`
+         * value can't turn this into a busy loop. */
+        if (ns < 500L * 1000L)        ns = 500L * 1000L;
         /* Don't oversleep -- cap at 10 ms so starvation is detected
          * promptly during shutdown. */
         if (ns > 10L * 1000L * 1000L) ns = 10L * 1000L * 1000L;

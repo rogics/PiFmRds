@@ -80,6 +80,14 @@ int g_log_level = LOG_LEVEL_INFO;
 #define RING_CAPACITY_LOG2 17
 #define RING_CAPACITY      (1u << RING_CAPACITY_LOG2)
 
+/* Feeder refill watermark, in DMA slots. The feeder only wakes once
+ * this many slots have drained; it then refills them in one pass.
+ * At 228 kHz, 1140 samples = 5 ms, matching the historical
+ * `usleep(5000)` pacing. Anything much smaller and the feeder burns
+ * a CPU core on syscall/poll overhead; anything much larger adds
+ * latency to the RDS/MPX output. */
+#define FEEDER_REFILL_WATERMARK 1140
+
 /* --- signal handler / globals ------------------------------------------- */
 static volatile sig_atomic_t g_terminate_requested = 0;
 static volatile sig_atomic_t g_terminate_signal    = 0;
@@ -187,9 +195,12 @@ static void *feeder_thread_main(void *arg) {
     while (!g_terminate_requested) {
         int free_slots;
         if (app->hw != NULL) {
-            /* Pace by the DMA. Returns as soon as at least one slot is
-             * free; typically returns with many slots. */
-            hw_rpi_wait_space(app->hw, 1);
+            /* Pace by the DMA: wait until FEEDER_REFILL_WATERMARK slots
+             * are free, then refill them all in one pass. Waking at
+             * single-slot granularity (228 kHz) would burn a full CPU
+             * on syscall overhead; batching to ~5 ms matches the
+             * historical usleep(5000) pacing. */
+            hw_rpi_wait_space(app->hw, FEEDER_REFILL_WATERMARK);
             free_slots = hw_rpi_free_slots(app->hw);
             if (free_slots < 0) continue;
         } else {
