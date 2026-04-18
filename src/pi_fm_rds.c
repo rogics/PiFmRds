@@ -196,7 +196,12 @@ static void *feeder_thread_main(void *arg) {
             /* --dry-run: consume at 228 kHz via clock_nanosleep so the
              * DSP producer can't race ahead indefinitely. Pull a large
              * batch so the pacing overhead stays tiny. */
-            struct timespec ts = { 0, (long)DATA_SIZE * 1000000000L / 228000L };
+            /* Use long long for the intermediate product: on 32-bit ARM,
+             * long is 32-bit and DATA_SIZE * 1e9 would overflow. */
+            long long ns = (long long)DATA_SIZE * 1000000000LL / 228000LL;
+            struct timespec ts;
+            ts.tv_sec  = (time_t)(ns / 1000000000LL);
+            ts.tv_nsec = (long)  (ns % 1000000000LL);
             nanosleep(&ts, NULL);
             free_slots = DATA_SIZE;
         }
