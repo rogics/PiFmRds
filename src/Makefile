@@ -87,8 +87,7 @@ LIBPIFM_OBJS = rds.o fm_mpx.o rds_strings.o waveforms.o
 HW_OBJS      = hw_rpi.o mailbox.o control_pipe.o
 APP_OBJS     = pi_fm_rds.o $(HW_OBJS) libpifmrds.a
 # rds_wav only uses the pure DSP library, so it has no hardware
-# dependency and builds everywhere. hw_stub.o is only needed by the
-# upcoming --dry-run path (see hw_stub.o below).
+# dependency and builds everywhere.
 RDSWAV_OBJS  = rds_wav.o libpifmrds.a
 
 # Default target: build both binaries everywhere. pi_fm_rds built on a
@@ -133,9 +132,6 @@ mailbox.o: mailbox.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 hw_rpi.o: hw_rpi.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-hw_stub.o: hw_stub.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 rds_strings.o: rds_strings.c

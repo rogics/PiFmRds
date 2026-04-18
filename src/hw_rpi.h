@@ -7,8 +7,9 @@
 
     This header isolates all Pi-specific hardware access behind an
     opaque handle so the rest of the codebase (DSP library, CLI, tests)
-    is portable. A matching stub implementation (hw_stub.c) exists for
-    host builds where the mailbox device is absent.
+    is portable. `pi_fm_rds --dry-run` compiles and links this TU but
+    skips `hw_rpi_init` / `hw_rpi_start` / `hw_rpi_push_deltas`, so
+    the DSP and threading pipeline can be exercised on any host.
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
