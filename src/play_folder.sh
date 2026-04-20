@@ -110,9 +110,12 @@ sanitize() {
   printf '%s' "$s"
 }
 
-# Extract title/artist with ffprobe, fall back to filename, then push to FIFO.
+# Extract title/artist with ffprobe, fall back to filename, then push a new
+# radiotext line to the control FIFO. PS is intentionally NOT updated per
+# track: it stays fixed at PS_DEFAULT (set via --ps at startup), which is
+# how most real FM stations behave.
 push_rds_for() {
-  local f="$1" title artist ps rt
+  local f="$1" title artist rt
   title="$(ffprobe -v error -show_entries format_tags=title  -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
   artist="$(ffprobe -v error -show_entries format_tags=artist -of default=nw=1:nk=1 "$f" 2>/dev/null || true)"
   title="$(sanitize "$title")"
@@ -127,10 +130,8 @@ push_rds_for() {
   else
     rt="$title"
   fi
-  ps="${title:0:8}"
   rt="${rt:0:64}"
 
-  printf 'PS %s\n' "$ps" >&3 || true
   printf 'RT %s\n' "$rt" >&3 || true
 }
 
