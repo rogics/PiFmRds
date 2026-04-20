@@ -73,26 +73,56 @@ fi
 echo "found ${#PLAYLIST[@]} track(s) in $FOLDER"
 echo "transmitting on ${FREQ} MHz (Ctrl-C to stop)"
 
-# --- RDS control FIFO --------------------------------------------------------
+# --- FIFOs for audio stream and RDS control ---------------------------------
 CTL_FIFO="$(mktemp -u /tmp/pifm_ctl.XXXXXX)"
+AUDIO_FIFO="$(mktemp -u /tmp/pifm_audio.XXXXXX)"
 mkfifo -m 600 "$CTL_FIFO"
+mkfifo -m 600 "$AUDIO_FIFO"
 
 PIFM_PID=""
+DECODER_PID=""
+SHUTTING_DOWN=0
+
 cleanup() {
   local rc=$?
+  # Guard against the trap firing twice (INT then EXIT).
+  if (( SHUTTING_DOWN )); then exit "$rc"; fi
+  SHUTTING_DOWN=1
+
   echo
   echo "stopping..."
+
+  # Kill the decoder first so it stops feeding the audio FIFO; this in turn
+  # makes the current ffmpeg child die via SIGPIPE.
+  if [[ -n "$DECODER_PID" ]] && kill -0 "$DECODER_PID" 2>/dev/null; then
+    kill -TERM "$DECODER_PID" 2>/dev/null || true
+  fi
+  # Then ask pi_fm_rds to shut down cleanly (stops the DMA / carrier).
   if [[ -n "$PIFM_PID" ]] && kill -0 "$PIFM_PID" 2>/dev/null; then
     kill -TERM "$PIFM_PID" 2>/dev/null || true
-    wait "$PIFM_PID" 2>/dev/null || true
   fi
-  # Close the read+write fd and remove the FIFO.
+
+  # Give them a moment; escalate to KILL if they're still around.
+  local t=0
+  while (( t < 20 )); do
+    local alive=0
+    [[ -n "$DECODER_PID" ]] && kill -0 "$DECODER_PID" 2>/dev/null && alive=1
+    [[ -n "$PIFM_PID"    ]] && kill -0 "$PIFM_PID"    2>/dev/null && alive=1
+    (( alive == 0 )) && break
+    sleep 0.1
+    t=$((t + 1))
+  done
+  [[ -n "$DECODER_PID" ]] && kill -KILL "$DECODER_PID" 2>/dev/null || true
+  [[ -n "$PIFM_PID"    ]] && kill -KILL "$PIFM_PID"    2>/dev/null || true
+  wait 2>/dev/null || true
+
+  # Close the control-FIFO fd and remove both FIFOs.
   exec 3<&- 2>/dev/null || true
   exec 3>&- 2>/dev/null || true
-  rm -f "$CTL_FIFO"
+  rm -f "$CTL_FIFO" "$AUDIO_FIFO"
   exit "$rc"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT INT TERM HUP
 
 # Keep the FIFO open so pi_fm_rds never sees EOF on --ctl.
 # NB: open read+write (`<>`), not write-only (`>`). A write-only open of
@@ -135,8 +165,22 @@ push_rds_for() {
   printf 'RT %s\n' "$rt" >&3 || true
 }
 
-# --- start pi_fm_rds, fed by the decoder loop via a pipe ---------------------
+# --- start pi_fm_rds, reading the audio stream from the audio FIFO ----------
+"$BIN" \
+    --freq "$FREQ" \
+    --pi   "$PI_CODE" \
+    --ps   "$PS_DEFAULT" \
+    --ctl  "$CTL_FIFO" \
+    --audio - < "$AUDIO_FIFO" &
+PIFM_PID=$!
+
+# --- decoder loop: feeds concatenated WAV into the audio FIFO ---------------
+# The inline `trap 'exit 130' INT TERM HUP` is crucial: without it, bash
+# would swallow SIGINT whenever its ffmpeg child exits from SIGPIPE instead
+# of SIGINT, and the loop would keep spinning after Ctrl-C (classic bash
+# pipeline quirk).
 (
+  trap 'kill ${ffmpeg_pid:-0} 2>/dev/null; exit 130' INT TERM HUP
   while :; do
     if (( SHUFFLE )); then
       mapfile -t ORDER < <(printf '%s\n' "${!PLAYLIST[@]}" | shuf)
@@ -147,20 +191,25 @@ push_rds_for() {
       f="${PLAYLIST[$i]}"
       echo ">> now playing: $f" >&2
       push_rds_for "$f"
-      # Decode this track into a raw WAV stream on stdout. Force a fixed
-      # sample rate + channel count so the stream concatenates cleanly and
-      # pi_fm_rds doesn't change pitch between tracks.
+      # Decode this track into a WAV stream on stdout. Force a fixed sample
+      # rate + channel count so concatenated tracks stay coherent.
       ffmpeg -hide_banner -loglevel error -nostdin \
-             -i "$f" -f wav -ac "$CHANNELS" -ar "$SAMPLE_RATE" - \
-        || echo "   (skipping unreadable file)" >&2
+             -i "$f" -f wav -ac "$CHANNELS" -ar "$SAMPLE_RATE" - &
+      ffmpeg_pid=$!
+      wait "$ffmpeg_pid"
+      rc=$?
+      # Exit codes >= 128 mean ffmpeg died from a signal (SIGPIPE, SIGTERM,
+      # SIGINT, ...). In that case the downstream pi_fm_rds is gone or we're
+      # shutting down: stop the loop instead of spinning through every file.
+      if (( rc >= 128 )); then
+        exit "$rc"
+      elif (( rc != 0 )); then
+        echo "   (skipping unreadable file, ffmpeg rc=$rc)" >&2
+      fi
     done
   done
-) | "$BIN" \
-      --freq "$FREQ" \
-      --pi   "$PI_CODE" \
-      --ps   "$PS_DEFAULT" \
-      --ctl  "$CTL_FIFO" \
-      --audio - &
+) > "$AUDIO_FIFO" &
+DECODER_PID=$!
 
-PIFM_PID=$!
+# Block on pi_fm_rds; the trap handles clean teardown of the decoder.
 wait "$PIFM_PID"
