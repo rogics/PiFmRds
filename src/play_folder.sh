@@ -86,15 +86,19 @@ cleanup() {
     kill -TERM "$PIFM_PID" 2>/dev/null || true
     wait "$PIFM_PID" 2>/dev/null || true
   fi
-  # Close the writer fd and remove the FIFO.
+  # Close the read+write fd and remove the FIFO.
+  exec 3<&- 2>/dev/null || true
   exec 3>&- 2>/dev/null || true
   rm -f "$CTL_FIFO"
   exit "$rc"
 }
 trap cleanup EXIT INT TERM
 
-# Keep the FIFO writer side open so pi_fm_rds never sees EOF on -ctl.
-exec 3>"$CTL_FIFO"
+# Keep the FIFO open so pi_fm_rds never sees EOF on --ctl.
+# NB: open read+write (`<>`), not write-only (`>`). A write-only open of
+# a FIFO blocks until a reader shows up, which would deadlock the script
+# because the reader (pi_fm_rds) is started further down.
+exec 3<>"$CTL_FIFO"
 
 # --- helpers -----------------------------------------------------------------
 # Sanitize a string for RDS: strip CR/LF, collapse whitespace, trim.
